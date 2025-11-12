@@ -21,7 +21,7 @@ const client = new SuiClient({ url: 'https://fullnode.mainnet.sui.io:443' });
 // Create an empty vector
 const vector = await EndlessVector.create({
     suiClient: client,
-    packageId: '0xYOUR_PACKAGE_ID',
+    packageId: 'testnet',  // or 'mainnet' or '0xYOUR_PACKAGE_ID'
     signAndExecuteTransaction: async (tx) => {
         const result = await wallet.signAndExecuteTransaction({ transaction: tx });
         return result.digest;
@@ -31,7 +31,7 @@ const vector = await EndlessVector.create({
 // Or create with initial data
 const vectorWithData = await EndlessVector.create({
     suiClient: client,
-    packageId: '0xYOUR_PACKAGE_ID',
+    packageId: 'testnet',  // or 'mainnet' or '0xYOUR_PACKAGE_ID'
     items: [
         new Uint8Array([1, 2, 3]),
         new Uint8Array([4, 5, 6])
@@ -70,7 +70,7 @@ Creates a new EndlessVector on the blockchain.
 
 **Parameters:**
 - `suiClient` (SuiClient) - Sui client instance for blockchain interactions
-- `packageId` (string) - ID of the Move package containing the EndlessVector module
+- `packageId` (string) - 'testnet', 'mainnet', or ID of the Move package containing the EndlessVector module
 - `signAndExecuteTransaction` (function) - Function to sign and execute transactions
 - `items` (Array<Uint8Array>, optional) - Initial items to push to the vector
 - `gasCoin` (Object, optional) - Gas coin object reference `{objectId: string, digest: string, version: string}` for transaction payment
@@ -84,7 +84,7 @@ Creates a new EndlessVector on the blockchain.
 ```javascript
 const vector = await EndlessVector.create({
     suiClient: client,
-    packageId: '0xPACKAGE_ID',
+    packageId: 'testnet',  // or 'mainnet' or '0xPACKAGE_ID'
     items: [new Uint8Array([1, 2, 3])],
     gasCoin: {
         objectId: '0xGAS_COIN_ID',
@@ -104,7 +104,7 @@ const vector = await EndlessVector.create({
 const vector = new EndlessVector({
     suiClient,                 // SuiClient instance (required for reading)
     id,                        // Object ID of the EndlessVector (required)
-    packageId,                 // Package ID for write operations (optional)
+    packageId,                 // 'testnet', 'mainnet', or Package ID for write operations (optional)
     signAndExecuteTransaction  // Function to sign/execute transactions (optional)
 });
 ```
@@ -275,7 +275,7 @@ const vectors = await Promise.all(
     testData.map((items, i) =>
         EndlessVector.create({
             suiClient: client,
-            packageId: '0xPACKAGE_ID',
+            packageId: 'testnet',  // or 'mainnet' or '0xPACKAGE_ID'
             items: items,
             gasCoin: gasCoinRefs[i],
             signAndExecuteTransaction: async (tx) => {
