@@ -24,8 +24,8 @@ Endless Vector solves the problem of Sui's object size [constraints](https://mov
 
 ## Documentation
 
-- **[JavaScript SDK Documentation](js/README.md)** - Detailed API reference and usage examples for the JavaScript/TypeScript SDK
-- **[Move Smart Contract Documentation](move/README.md)** - Complete guide to the Move contract functions and architecture
+- **[JavaScript SDK Documentation](js/)** - Detailed API reference and usage examples for the JavaScript/TypeScript SDK
+- **[Move Smart Contract Documentation](move/)** - Complete guide to the Move contract functions and architecture
 
 ## Author
 
