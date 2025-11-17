@@ -20,7 +20,7 @@ module endless_vector::endless_vector {
     const EIndexOutOfBounds: u64 = 96;
     const ECannotConcatWithArchivedItems: u64 = 97;
 
-    public struct EndlessVector has key {
+    public struct EndlessVector has key, store {
         id: UID,
         items: vector<vector<u8>>,
         first_item_is_from_previous_history: bool, // if the first item should be appended to the last one from the previous EndlessVectorHistory
@@ -57,6 +57,12 @@ module endless_vector::endless_vector {
         length: u64,      // total number of items in this archive
     }
 
+    #[allow(lint(self_transfer))]
+    public fun transfer_to_sender(endless_v: EndlessVector, ctx: &mut TxContext) {
+        transfer::public_transfer(endless_v, ctx.sender());
+    }
+
+    #[allow(lint(self_transfer))]
     public fun empty_entry(ctx: &mut TxContext) {
         let endless_vector = empty(ctx);
         transfer::transfer(endless_vector, ctx.sender());
@@ -109,6 +115,7 @@ module endless_vector::endless_vector {
         Creates a new EndlessVector, pushes multiple items to it, and transfers it to the sender.
         Entry function wrapper around empty_and_push.
     */
+    #[allow(lint(self_transfer))]
     public fun empty_entry_and_push(items_to_push: vector<vector<u8>>, ctx: &mut TxContext) {
         let endless_v = empty_and_push(items_to_push, ctx);
         transfer::transfer(endless_v, ctx.sender());

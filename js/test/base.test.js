@@ -71,7 +71,77 @@ test('attach a local package', async t => {
 });
 
 
+test('test raw create transaction', async t => {
+    const arr = randomBytesOfLength(120 * 1024); // 100KB
+    
+    const tx = new suiMaster.Transaction();
+    const vectorTxInput = await EndlessVector.getCreateTransactionAndReturnVectorInput({
+        packageId: contract.id,
+    }, arr, tx);
+    tx.transferObjects([vectorTxInput], tx.pure.address(suiMaster.address));
+    
+    t.ok(tx);
+    let digest = null;
+    try {
+        digest = await signAndExecuteTransaction(tx);
+        t.ok(digest);
+    } catch (e) {
+        console.error('Error preparing transaction:', e);
+    }
 
+    const transactionBlockResponse = await suiMaster.client.waitForTransaction({
+        digest: digest,
+        options: { showObjectChanges: true, },
+    }); 
+
+    // Find the created EndlessVector object
+    const objectChanges = transactionBlockResponse.objectChanges || [];
+    const createdVector = objectChanges.find(
+        change => change.type === 'created' &&
+                    change.objectType &&
+                    change.objectType.includes('endless_vector::EndlessVector')
+    );
+
+    const createdVectorId = createdVector ? createdVector.objectId : null;
+    t.ok(createdVectorId, 'Created EndlessVector object should have an ID');
+
+    const loadBack = new EndlessVector({
+        suiClient: suiMaster.client,
+        id: createdVectorId,
+    });
+    await loadBack.initialize();
+
+    t.ok(loadBack.length === 1, `Loaded vector should have length 1, got ${loadBack.length}`);
+    const getBack = await loadBack.at(0);
+    t.ok(equalUint8Arrays(getBack, arr), 'Data retrieved from loaded vector should match original data');
+});
+
+
+test('make a test EndlessVector with few chunks in a single tx', async t => {
+    const data = [
+        randomBytesOfLength(1 * 1024),
+        randomBytesOfLength(2 * 1024),
+        randomBytesOfLength(3 * 1024),
+    ];
+
+    const testEndlessVector = await EndlessVector.create({
+        array: data,
+        suiClient: suiMaster.client, // instance of Sui SDK SuiClient
+        packageId: contract.id, // provide packageId and signAndExecuteTransaction to make EndlessVector writable
+        signAndExecuteTransaction: signAndExecuteTransaction,
+    });
+
+    const getBack0 = await testEndlessVector.at(0);
+    const getBack1 = await testEndlessVector.at(1);
+    const getBack2 = await testEndlessVector.at(2);
+
+    t.ok(equalUint8Arrays(getBack0, data[0]));
+    t.ok(equalUint8Arrays(getBack1, data[1]));
+    t.ok(equalUint8Arrays(getBack2, data[2]));
+
+    t.ok(testEndlessVector.length === 3);
+    t.ok(testEndlessVector.binaryLength === 6 * 1024);
+});
 
 test('make a test EndlessVector and push single Uint8Array to it', async t => {
     endlessVector = await EndlessVector.create({
@@ -358,7 +428,7 @@ test('test parallel creation, push, and append of 6 vectors', async t => {
     // Prepare test data for each vector
     const testData = [];
     for (let i = 0; i < vectorCount; i++) {
-        testData.push([randomBytesOfLength(1024), new Uint8Array([0, 1, i])]);
+        testData.push(randomBytesOfLength(1024));
     }
 
     // Create N EndlessVectors in parallel using static create method
@@ -368,7 +438,7 @@ test('test parallel creation, push, and append of 6 vectors', async t => {
             EndlessVector.create({
                 suiClient: suiMaster.client,
                 packageId: contract.id,
-                items: testData[i] ? testData[i] : [],
+                array: testData[i] ? testData[i] : null,
                 gasCoin: gasCoinInputs[i],
                 signAndExecuteTransaction: async (tx) => {
                     console.log(`Creating vector ${i}...`);
@@ -407,24 +477,20 @@ test('test parallel creation, push, and append of 6 vectors', async t => {
     // Verify the data after concatenation
     await mainVector.initialize();
 
-    // Each vector has 2 items, so total should be vectorCount * 2
-    const expectedLength = vectorCount * 2;
+    const expectedLength = vectorCount;
     t.ok(mainVector.length === expectedLength, `mainVector should have ${expectedLength} items, got ${mainVector.length}`);
 
     console.log(`Verifying ${expectedLength} items in concatenated vector...`);
 
     // Verify each item matches the original testData
     for (let vectorIdx = 0; vectorIdx < vectorCount; vectorIdx++) {
-        for (let itemIdx = 0; itemIdx < testData[vectorIdx].length; itemIdx++) {
-            const globalIdx = vectorIdx * testData[vectorIdx].length + itemIdx;
-            const retrieved = await mainVector.at(globalIdx);
-            const expected = testData[vectorIdx][itemIdx];
+        const expected = testData[vectorIdx];
+        const retrieved = await mainVector.at(vectorIdx);
 
-            t.ok(
-                equalUint8Arrays(retrieved, expected),
-                `Item ${globalIdx} (vector ${vectorIdx}, item ${itemIdx}) should match`
-            );
-        }
+        t.ok(
+            equalUint8Arrays(retrieved, expected),
+            `Item ${vectorIdx} (vector ${vectorIdx}, item ${vectorIdx}) should match`
+        );
     }
 });
 

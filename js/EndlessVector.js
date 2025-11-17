@@ -8,6 +8,7 @@ import ids from './ids.js';
  * @typedef {import('@mysten/sui/client').SuiClient} SuiClient
  * @typedef {import('@mysten/sui/client').GetObjectParams} GetObjectParams
  * @typedef {import('@mysten/sui/client').GetDynamicFieldsParams} GetDynamicFieldsParams
+ * @typedef {import('@mysten/sui/transactions').TransactionResult} TransactionResult
  */
 
 /**
@@ -76,9 +77,9 @@ export default class EndlessVector {
         /** @type {?string} */
         this._packageId = params.packageId || null;
 
-        if (this._packageId == 'mainnet' || !this._packageId && this.suiClient?.network == 'mainnet') {
+        if (this._packageId == 'mainnet' || (!this._packageId && this.suiClient?.network == 'mainnet')) {
             this._packageId = ids['mainnet'].packageId;
-        } else if (this._packageId == 'testnet' || !this._packageId && this.suiClient?.network == 'testnet') {
+        } else if (this._packageId == 'testnet' || (!this._packageId && this.suiClient?.network == 'testnet')) {
             this._packageId = ids['testnet'].packageId;
         }
 
@@ -94,7 +95,7 @@ export default class EndlessVector {
      * @param {SuiClient} params.suiClient - Sui client instance for blockchain interactions
      * @param {string} params.packageId - ID of the Move package containing the EndlessVector module
      * @param {CustomSignAndExecuteTransactionFunction} params.signAndExecuteTransaction - Function to sign and execute transactions
-     * @param {?Array<Uint8Array>} [params.items] - Optional array of Uint8Array items to initialize the vector with. If provided, uses empty_entry_and_push, otherwise uses empty_entry
+     * @param {?Uint8Array|Uint8Array[]} [params.array] - Optional Uint8Array to initialize the vector with as the first item to get with .at(0)
      * @param {?Object} [params.gasCoin] - Optional gas coin object reference {objectId: string, digest: string, version: string} to use for transaction payment
      * @param {?Object} [params.options] - Optional transaction parameters
      * @param {?Number} [params.options.timeout] - Transaction confirmation timeout in ms, default 30000
@@ -103,12 +104,19 @@ export default class EndlessVector {
      * @throws {Error} If the transaction fails or no EndlessVector object is created
      */
     static async create(params) {
-        const { suiClient, packageId, signAndExecuteTransaction, items, gasCoin, options = {} } = params;
+        const { suiClient, packageId, signAndExecuteTransaction, array, gasCoin, options = {} } = params;
+
+        let normalizedPackageId = packageId;
+        if (normalizedPackageId == 'mainnet' || (!normalizedPackageId && suiClient?.network == 'mainnet')) {
+            normalizedPackageId = ids['mainnet'].packageId;
+        } else if (normalizedPackageId == 'testnet' || (!normalizedPackageId && suiClient?.network == 'testnet')) {
+            normalizedPackageId = ids['testnet'].packageId;
+        }
 
         if (!suiClient) {
             throw new Error('suiClient is required');
         }
-        if (!packageId) {
+        if (!normalizedPackageId) {
             throw new Error('packageId is required');
         }
         if (!signAndExecuteTransaction) {
@@ -122,14 +130,34 @@ export default class EndlessVector {
             tx.setGasPayment([gasCoin]);
         }
 
-        if (items && Array.isArray(items) && items.length) {
-            tx.moveCall({
-                target: `${packageId}::endless_vector::empty_entry_and_push`,
-                arguments: [tx.pure(bcs.vector(bcs.vector(bcs.u8())).serialize(items))],
-            });
+        if (array && array.length) {
+            if ((array instanceof Uint8Array)) {
+                // single chunk
+                const vectorInput = await EndlessVector.getCreateTransactionAndReturnVectorInput({
+                    packageId: normalizedPackageId,
+                }, array, tx);
+                tx.moveCall({
+                    target: `${normalizedPackageId}::endless_vector::transfer_to_sender`,
+                    arguments: [vectorInput],
+                });
+            } else if (array[0] && (array[0] instanceof Uint8Array)) {
+                // multiple chunks
+                const vectorInput = await EndlessVector.getCreateTransactionAndReturnVectorInput({
+                    packageId: normalizedPackageId,
+                }, null, tx);
+                for (let i = 0; i < array.length; i++) {
+                    EndlessVector.composePushTransaction(normalizedPackageId, vectorInput, array[i], tx);
+                }
+                tx.moveCall({
+                    target: `${normalizedPackageId}::endless_vector::transfer_to_sender`,
+                    arguments: [vectorInput],
+                });
+            } else {
+                throw new Error('.array must be Uint8Array or array of Uint8Array');
+            }
         } else {
             tx.moveCall({
-                target: `${packageId}::endless_vector::empty_entry`,
+                target: `${normalizedPackageId}::endless_vector::empty_entry`,
                 arguments: [],
             });
         }
@@ -168,38 +196,97 @@ export default class EndlessVector {
         return new EndlessVector({
             suiClient,
             id: createdVector.objectId,
-            packageId,
+            packageId: normalizedPackageId,
             signAndExecuteTransaction,
         });
     }
 
-    get isWritable() {
-        return !!(this._packageId && this._signAndExecuteTransaction);
-    }
-
     /**
-    * Creates a transaction to push new byte arrays to the EndlessVector.
-    * Note: this method only creates the transaction, it does not sign or execute it.
-
-    * @param {Uint8Array} arr - Array of byte arrays to push
-    * @returns {Transaction} The transaction object to be signed and executed
-    */
-    getPushTransaction(arr, txToAppendTo = null) {
-        if (!this._packageId) {
-            throw new Error('packageId is required to compose push transaction');
+     * Creates an empty EndlessVector and returns the vector input reference.
+     * Appends vector creation to existing transaction or makes new one.
+     * 
+     * Returns the vector input reference for use in subsequent move calls as argument or to be transferred.
+     *
+     * @param {Object} params - Configuration parameters
+     * @param {string} params.packageId - The package ID ('mainnet', 'testnet', or explicit package ID)
+     * @param {Uint8Array|null} [arr=null] - Optional Uint8Array to push back to the new vector as the first item
+     * @param {Transaction|null} [txToAppendTo=null] - Optional existing transaction to append the move calls to
+     * @returns {Promise<TransactionResult>} Vector input reference for use in subsequent move calls
+     * @throws {Error} Throws if packageId is not provided or invalid
+     *
+     * @example
+     * // Create an empty vector
+     * const vectorInput = await EndlessVector.getCreateTransactionAndReturnVectorInput({
+     *   packageId: 'mainnet'
+     * });
+     *
+     * @example
+     * // Create and populate a vector within an existing transaction
+     * const data = new Uint8Array([1, 2, 3, 4]);
+     * const tx = new Transaction();
+     * const vectorInput = await EndlessVector.getCreateTransactionAndReturnVectorInput({
+     *   packageId: contract.id
+     * }, data, tx);
+     */
+    static async getCreateTransactionAndReturnVectorInput(params, arr = null, txToAppendTo = null) {
+        const { packageId } = params;
+        let normalizedPackageId = packageId;
+        if (normalizedPackageId == 'mainnet') {
+            normalizedPackageId = ids['mainnet'].packageId;
+        } else if (normalizedPackageId == 'testnet') {
+            normalizedPackageId = ids['testnet'].packageId;
         }
+
+        if (!normalizedPackageId) {
+            throw new Error('packageId is required');
+        }
+        // Create transaction to call empty_entry
 
         let tx = txToAppendTo;
         if (!tx) {
             tx = new Transaction();
         }
 
+        const vectorInput = tx.moveCall({
+            target: `${normalizedPackageId}::endless_vector::empty`,
+            arguments: [],
+        });
+
+        if (arr && arr) {
+            EndlessVector.composePushTransaction(normalizedPackageId, vectorInput, arr, tx);
+        }
+
+        return vectorInput;
+    }
+
+    get isWritable() {
+        return !!(this._packageId && this._signAndExecuteTransaction);
+    }
+
+    /** 
+     * Attach move calls to transaction, to push item into endlessvector, handling large arrays by chunking them.
+     * This static method can be used to compose transactions for any existing EndlessVector instance:
+     * tx.object(vector.id)
+     * or newly created one, accepting TransactionResult as vectorInput, see: getCreateTransactionAndReturnVectorInput
+     *
+     * For arrays smaller than 12KB, it uses a single push_back call.
+     * For arrays between 12KB and 120KB, it splits the data into 10 chunks and uses compose_and_push_back.
+     *
+     * @static
+     * @param {string} packageId - The package ID of the Move module containing the endless_vector functions
+     * @param {TransactionObjectArgument} vectorInput - The transaction object argument representing the EndlessVector
+     * @param {Uint8Array} arr - The byte array to push to the vector
+     * @param {Transaction} tx - The transaction object to append the move calls to
+     * @returns {Transaction} The transaction object with the push operations added
+     * @throws {Error} If the array is larger than 120KB (10 * 12KB)
+     */
+    static composePushTransaction(packageId, vectorInput, arr, tx) {
         const maxArgLength = 12 * 1024;
-        if (arr.length < maxArgLength) {
+        if (arr.length <= maxArgLength) {
                 tx.moveCall({
-                        target: `${this._packageId}::endless_vector::push_back`,
+                        target: `${packageId}::endless_vector::push_back`,
                         arguments: [
-                            tx.object(this.id),
+                            vectorInput,
                             tx.pure(bcs.vector(bcs.u8()).serialize(arr)),
                         ],
                     });
@@ -216,17 +303,49 @@ export default class EndlessVector {
                     chunks.push(new Uint8Array()); // empty chunk
                 }
             }
-            const args = [tx.object(this.id)];
+            const args = [vectorInput];
             for (let i = 0; i < N; i++) {
                 args.push(tx.pure(bcs.vector(bcs.u8()).serialize(chunks[i])));
             }
             tx.moveCall({
-                    target: `${this._packageId}::endless_vector::compose_and_push_back`,
+                    target: `${packageId}::endless_vector::compose_and_push_back`,
                     arguments: args,
                 });
         } else {
             throw new Error('Array too large, max '+(10*maxArgLength)+' bytes supported per single tx');
         }
+
+        return tx;
+    }
+
+
+    /**
+    * Creates a transaction to push new byte arrays to the EndlessVector.
+    * Note: this method only creates the transaction, it does not sign or execute it.
+
+    * @param {Uint8Array|Uint8Array[]} arr - Uint8Array to push
+    * @returns {Transaction} The transaction object to be signed and executed
+    */
+    getPushTransaction(arr, txToAppendTo = null) {
+        if (!this._packageId) {
+            throw new Error('packageId is required to compose push transaction');
+        }
+
+        let tx = txToAppendTo;
+        if (!tx) {
+            tx = new Transaction();
+        }
+
+        if (arr instanceof Uint8Array) {
+            EndlessVector.composePushTransaction(this._packageId, tx.object(this.id), arr, tx);
+        } else if (Array.isArray(arr) && arr[0] && (arr[0] instanceof Uint8Array)) {
+            for (let i = 0; i < arr.length; i++) {
+                EndlessVector.composePushTransaction(this._packageId, tx.object(this.id), arr[i], tx);
+            }
+        } else {
+            throw new Error('.array must be Uint8Array or array of Uint8Array');
+        }
+
         return tx;
     }
 
@@ -236,7 +355,7 @@ export default class EndlessVector {
      * Requires the instance to be writable (packageId and signAndExecuteTransaction must be provided).
      * @throws {Error} If the instance is not writable or if the transaction fails
      *
-     * @param {Uint8Array} arr - Byte array to push
+     * @param {Uint8Array|Uint8Array[]} arr - Byte array or array of byte arrays to push
      * @param {?Object} params - Configuration parameters
      * @param {?Number} [params.timeout] - wait for transaction confirmation timeout in ms, default 30000
      * @param {?Number} [params.pollIntervalMs] - wait for transaction confirmation poll interval in ms, default 1000

@@ -1,9 +1,10 @@
 {
     "name": "@fizzyflow/endless-vector",
-    "version": "0.0.1",
+    "version": "0.0.6",
     "description": "",
     "type": "module",
     "main": "./index.js",
+    "types": "./index.d.ts",
     "keywords": [
         "sui",
         "vector",
@@ -18,16 +19,19 @@
         "type": "git",
         "url": "git+https://github.com/fizzyFlow/endless_vector.git"
     },
+    "publishConfig": {
+        "access": "public"
+    },
     "author": "suidouble (https://github.com/suidouble)",
     "license": "Apache-2.0",
     "scripts": {
-        "test": "tap -j1 -t240 ./test/*.test.js"
+        "test": "tap -j1 -t320 ./test/*.test.js"
     },
     "peerDependencies": {
-        "@mysten/sui": "^1.44.0"
+        "@mysten/sui": "^1.45.0"
     },
     "devDependencies": {
-        "suidouble": "^1.44.0",
+        "suidouble": "^1.45.0",
         "tap": "^21.1.0"
     }
 }

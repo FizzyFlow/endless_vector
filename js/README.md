@@ -32,10 +32,8 @@ const vector = await EndlessVector.create({
 const vectorWithData = await EndlessVector.create({
     suiClient: client,
     packageId: 'testnet',  // or 'mainnet' or '0xYOUR_PACKAGE_ID'
-    items: [
-        new Uint8Array([1, 2, 3]),
-        new Uint8Array([4, 5, 6])
-    ],
+    array: new Uint8Array([1, 2, 3]),  // [0] to append to EndlessVector
+    //array: [new Uint8Array([1, 2, 3]), new Uint8Array([5, 6, 7])],  // or [0] and [1] to append to EndlessVector
     signAndExecuteTransaction: async (tx) => {
         const result = await wallet.signAndExecuteTransaction({ transaction: tx });
         return result.digest;
@@ -57,7 +55,7 @@ console.log('Total items:', vector.length);
 console.log('Total size:', vector.binaryLength, 'bytes');
 
 // Read items
-const firstItem = await vector.at(0);
+const firstItem = await vector.at(0); // Uint8Array
 ```
 
 ## API Reference
@@ -72,7 +70,7 @@ Creates a new EndlessVector on the blockchain.
 - `suiClient` (SuiClient) - Sui client instance for blockchain interactions
 - `packageId` (string) - 'testnet', 'mainnet', or ID of the Move package containing the EndlessVector module
 - `signAndExecuteTransaction` (function) - Function to sign and execute transactions
-- `items` (Array<Uint8Array>, optional) - Initial items to push to the vector
+- `array` (Uint8Array or Uint8Array[], optional) - Optional first vector<u8>(s) to push back to the new vector
 - `gasCoin` (Object, optional) - Gas coin object reference `{objectId: string, digest: string, version: string}` for transaction payment
 - `options` (Object, optional) - Additional options:
   - `timeout` (number) - Transaction confirmation timeout in ms (default: 30000)
@@ -85,7 +83,7 @@ Creates a new EndlessVector on the blockchain.
 const vector = await EndlessVector.create({
     suiClient: client,
     packageId: 'testnet',  // or 'mainnet' or '0xPACKAGE_ID'
-    items: [new Uint8Array([1, 2, 3])],
+    array: new Uint8Array([1, 2, 3]),
     gasCoin: {
         objectId: '0xGAS_COIN_ID',
         digest: 'DIGEST',
@@ -145,7 +143,7 @@ await vector.reInitialize();
 
 #### push(arr, params)
 
-Pushes a new byte array to the vector. Requires writable mode. Maximum size per item: ~200KB.
+Pushes a Uint8Array or few Uint8Array(Uint8Array[]) to the vector. Requires writable mode. Maximum size per push: ~120KB.
 
 ```javascript
 const data = new Uint8Array([1, 2, 3, 4, 5]);
@@ -153,7 +151,7 @@ await vector.push(data);
 ```
 
 **Parameters:**
-- `arr` (Uint8Array) - Data to push
+- `arr` (Uint8Array or Uint8Array[]) - Data to push
 - `params` (Object, optional) - Additional parameters
 
 #### getPushTransaction(arr, tx)
@@ -173,7 +171,7 @@ await signAndExecuteTransaction(tx);
 ```
 
 **Parameters:**
-- `arr` (Uint8Array) - Data to push
+- `arr` (Uint8Array or Uint8Array[]) - Data to push
 - `tx` (Transaction, optional) - Existing transaction to append to
 
 **Returns:** Transaction
@@ -276,7 +274,7 @@ const vectors = await Promise.all(
         EndlessVector.create({
             suiClient: client,
             packageId: 'testnet',  // or 'mainnet' or '0xPACKAGE_ID'
-            items: items,
+            array: items,
             gasCoin: gasCoinRefs[i],
             signAndExecuteTransaction: async (tx) => {
                 const result = await wallet.signAndExecuteTransaction({ transaction: tx });
