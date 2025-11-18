@@ -1,8 +1,7 @@
 module endless_vector::endless_vector {
-    const VERSION: u64 = 1;
+    const VERSION: u64 = 2;
 
-    const SAFE_INNER_SIZE: u64 = 128*1024;  // max_move_object_size: Some(250 * 1024),
-                                            // but we need to respect max_tx_size_bytes: Some(128 * 1024), too
+    const SAFE_INNER_SIZE: u64 = 128*1024;  // Keep in object.items, more in history/archive
 
     #[test_only]
     use sui::test_scenario as ts;
@@ -275,6 +274,38 @@ module endless_vector::endless_vector {
             endless_v.burned_archive_count = endless_v.burned_archive_count + 1;
             endless_v.archived_from_length = endless_v.archived_from_length + length;
         };
+    }
+
+    public fun burn(mut endless_v:  EndlessVector) {
+        flush(&mut endless_v);
+        let EndlessVector {
+            id,
+            items: _,
+            first_item_is_from_previous_history: _,
+            length: _,
+            binary_length: _,
+            this_object_items_binary_length: _,
+            history: history_opt,
+            history_items_count: _,
+            archive: archive_table,
+            archive_items_count: _,
+            archived_at_length: _,
+            archived_from_length: _,
+            burned_archive_count: _,
+            made_with_version: _,
+            meta: _,
+        } = endless_v;
+
+        if (std::option::is_some(&history_opt)) {
+            let history_table = std::option::destroy_some(history_opt);
+            table::drop(history_table);
+        } else {
+            std::option::destroy_none(history_opt);
+        };
+
+        table::destroy_empty(archive_table);
+
+        sui::object::delete(id);
     }
 
     public fun flush(endless_v: &mut EndlessVector) {
@@ -1497,6 +1528,78 @@ module endless_vector::endless_vector {
         assert!(get_at(&endless_v, 2) == b"Item 3", 4);
 
         transfer::transfer(endless_v, TEST_SENDER_ADDR);
+        ts::end(scenario);
+    }
+
+    #[test]
+    fun test_burn_empty_vector() {
+        let mut scenario = ts::begin(TEST_SENDER_ADDR);
+        let ctx = ts::ctx(&mut scenario);
+
+        // Burn an empty EndlessVector
+        let empty_v = empty(ctx);
+        assert!(empty_v.length == 0, 0);
+        assert!(empty_v.binary_length == 0, 1);
+        burn(empty_v);
+
+        ts::end(scenario);
+    }
+
+    #[test]
+    fun test_burn_vector_with_items() {
+        let mut scenario = ts::begin(TEST_SENDER_ADDR);
+        let ctx = ts::ctx(&mut scenario);
+
+        // Burn a vector with items (no history or archive)
+        let mut v_with_items = empty(ctx);
+        push_back(&mut v_with_items, b"Item 1");
+        push_back(&mut v_with_items, b"Item 2");
+        push_back(&mut v_with_items, b"Item 3");
+        assert!(v_with_items.length == 3, 0);
+        burn(v_with_items);
+
+        ts::end(scenario);
+    }
+
+    #[test]
+    fun test_burn_vector_with_history() {
+        let mut scenario = ts::begin(TEST_SENDER_ADDR);
+        let ctx = ts::ctx(&mut scenario);
+
+        // Burn a vector with history
+        let mut v_with_history = empty(ctx);
+        let mut i = 0;
+        // Use fewer items to avoid timeout
+        while (i < 100) {
+            push_back(&mut v_with_history, pseudo_random_bytes(i, 2000));
+            i = i + 1;
+        };
+        assert!(v_with_history.history_items_count > 0, 0);
+        assert!(v_with_history.length == 100, 1);
+        burn(v_with_history);
+
+        ts::end(scenario);
+    }
+
+    #[test]
+    fun test_burn_vector_with_archive() {
+        let mut scenario = ts::begin(TEST_SENDER_ADDR);
+        let ctx = ts::ctx(&mut scenario);
+
+        // Burn a vector with archive
+        let mut v_with_archive = empty(ctx);
+        let mut i = 0;
+        // Use fewer items to avoid timeout
+        while (i < 100) {
+            push_back(&mut v_with_archive, pseudo_random_bytes(i + 1000, 2000));
+            i = i + 1;
+        };
+        archive(&mut v_with_archive, ctx);
+        assert!(v_with_archive.archive_items_count > 0, 0);
+        push_back(&mut v_with_archive, b"After archive");
+        assert!(v_with_archive.length == 101, 1);
+        burn(v_with_archive);
+
         ts::end(scenario);
     }
 
