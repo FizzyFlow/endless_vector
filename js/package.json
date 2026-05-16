@@ -25,13 +25,19 @@
     "author": "suidouble (https://github.com/suidouble)",
     "license": "Apache-2.0",
     "scripts": {
-        "test": "tap -j1 -t320 ./test/*.test.js"
+        "test": "vitest run ./test/*.test.js",
+        "test:walrus-blobs": "vitest run ./test/walrus_blobs.test.js",
+        "test:walrus-blobs-sdk": "vitest run ./test/walrus_blobs_sdk.test.js",
+        "test:walrus-blobs-history": "vitest run --config vitest.config.js ./test/walrus_blobs_history.test.js",
+        "test:base": "vitest run ./test/base.test.js"
     },
     "peerDependencies": {
         "@mysten/sui": "^1.45.0"
     },
     "devDependencies": {
-        "suidouble": "^1.45.0",
-        "tap": "^21.1.0"
+        "@mysten/sui": "^2.16.0",
+        "suidouble": "^2.16.0",
+        "tap": "^21.1.0",
+        "vitest": "^3.2.0"
     }
 }

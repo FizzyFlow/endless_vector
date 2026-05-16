@@ -3,5 +3,8 @@ name = "endless_vector"
 version = "0.0.1"
 edition = "2024.beta"
 
+[dependencies]
+Walrus = { local = "../../seal_walrus_localnet/mysten_contracts_forks/walrus_contracts/walrus" }
+
 [addresses]
 endless_vector =  "0x0"

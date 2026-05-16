@@ -1,13 +1,15 @@
 import EndlessVectorHistory from './EndlessVectorHistory.js';
 import EndlessVectorArchive from './EndlessVectorArchive.js';
+import EndlessVectorItem from './EndlessVectorItem.js';
+import EndlessVectorWalrus from './EndlessVectorWalrus.js';
 import { Transaction } from '@mysten/sui/transactions';
 import { bcs } from '@mysten/sui/bcs';
 import ids from './ids.js';
 
+
+
 /**
- * @typedef {import('@mysten/sui/client').SuiClient} SuiClient
- * @typedef {import('@mysten/sui/client').GetObjectParams} GetObjectParams
- * @typedef {import('@mysten/sui/client').GetDynamicFieldsParams} GetDynamicFieldsParams
+ * @typedef {import('@mysten/sui/grpc').SuiGrpcClient} SuiGrpcClient
  * @typedef {import('@mysten/sui/transactions').TransactionResult} TransactionResult
  */
 
@@ -27,11 +29,13 @@ export default class EndlessVector {
     /**
      * Creates a new EndlessVector instance.
      * @param {Object} params - Configuration parameters
-     * @param {SuiClient} [params.suiClient] - Sui client instance for blockchain interactions
+     * @param {SuiGrpcClient} [params.suiClient] - gRPC client instance for blockchain interactions
      * @param {string} [params.id] - ID or address of the EndlessVector on the Sui blockchain
-     *
-     * @param {?string} [params.packageId] - Adds write capability if provided, ID of the Move package containing the EndlessVector module or 'mainnet', 'testnet' to use known IDs
-     * @param {?CustomSignAndExecuteTransactionFunction} [params.signAndExecuteTransaction] - Adds write capability if provided, function should accept Sui transaction, sign and submit it to the blockchain and return its digest
+     * @param {?string} [params.packageId] - Adds write capability if provided; ID of the Move package or 'mainnet'/'testnet' to use known IDs
+     * @param {?CustomSignAndExecuteTransactionFunction} [params.signAndExecuteTransaction] - Adds write capability if provided; must accept a Transaction and return its digest
+     * @param {?import('@mysten/walrus').WalrusClient} [params.walrusClient] - Walrus client for blob reads and writes (preferred)
+     * @param {?string} [params.publisherUrl] - Walrus publisher HTTP URL for blob uploads (fallback if no walrusClient)
+     * @param {?string} [params.aggregatorUrl] - Walrus aggregator HTTP URL for blob reads (fallback if no walrusClient)
      */
     constructor(params = {}) {
         /** @type {SuiClient} */
@@ -54,7 +58,7 @@ export default class EndlessVector {
         /** @type {boolean} */
         this.firstItemIsFromPreviousHistory = false; // from EndlessVector.fields.
 
-        /** @type {Array<Uint8Array>} */
+        /** @type {Array<EndlessVectorItem>} */
         this._items = []; // items in current EndlessVector object,
 
         /** @type {string} */
@@ -85,6 +89,13 @@ export default class EndlessVector {
 
         /** @type {?CustomSignAndExecuteTransactionFunction} */
         this._signAndExecuteTransaction = params.signAndExecuteTransaction || null;
+
+        /**
+         * EndlessVectorWalrus instance for Walrus blob read/write.
+         * Null on plain EndlessVector; set to `this` by EndlessVectorWalrus constructor.
+         * @type {?EndlessVectorWalrus}
+         */
+        this.walrus = new EndlessVectorWalrus({ ...params, endlessVector: this });
     }
 
     /**
@@ -137,7 +148,7 @@ export default class EndlessVector {
                     packageId: normalizedPackageId,
                 }, array, tx);
                 tx.moveCall({
-                    target: `${normalizedPackageId}::endless_vector::transfer_to_sender`,
+                    target: `${normalizedPackageId}::endless_walrus::transfer_to_sender`,
                     arguments: [vectorInput],
                 });
             } else if (array[0] && (array[0] instanceof Uint8Array)) {
@@ -149,7 +160,7 @@ export default class EndlessVector {
                     EndlessVector.composePushTransaction(normalizedPackageId, vectorInput, array[i], tx);
                 }
                 tx.moveCall({
-                    target: `${normalizedPackageId}::endless_vector::transfer_to_sender`,
+                    target: `${normalizedPackageId}::endless_walrus::transfer_to_sender`,
                     arguments: [vectorInput],
                 });
             } else {
@@ -157,7 +168,7 @@ export default class EndlessVector {
             }
         } else {
             tx.moveCall({
-                target: `${normalizedPackageId}::endless_vector::empty_entry`,
+                target: `${normalizedPackageId}::endless_walrus::empty_entry`,
                 arguments: [],
             });
         }
@@ -166,34 +177,31 @@ export default class EndlessVector {
         const digest = await signAndExecuteTransaction(tx);
 
         // Wait for transaction to complete
-        const transactionBlockResponse = await suiClient.waitForTransaction({
-            digest: digest,
+        const txResult = await suiClient.waitForTransaction({
+            digest,
+            include: { effects: true, objectTypes: true },
             timeout: options.timeout || 30000,
-            pollIntervalMs: options.pollIntervalMs || 1000,
-            options: {
-                showEffects: true,
-                showObjectChanges: true,
-            },
+            pollInterval: options.pollIntervalMs || 1000,
         });
-
-        if (transactionBlockResponse?.effects?.status?.status !== 'success') {
+        const txData = txResult.Transaction ?? txResult.FailedTransaction;
+        if (!txData?.status?.success) {
             throw new Error('Transaction failed to create EndlessVector');
         }
 
-        // Find the created EndlessVector object
-        const objectChanges = transactionBlockResponse.objectChanges || [];
-        const createdVector = objectChanges.find(
-            change => change.type === 'created' &&
-                     change.objectType &&
-                     change.objectType.includes('endless_vector::EndlessVector')
+        // Find the created EndlessVector object via objectTypes map (gRPC) or fallback objectChanges
+        const objectTypes = txData.objectTypes ?? {};
+        const createdVector = txData.effects?.changedObjects?.find(
+            c => c.idOperation === 'Created' &&
+                 (objectTypes[c.objectId] ?? '').includes('endless_walrus::EndlessWalrusVector')
         );
 
-        if (!createdVector || !createdVector.objectId) {
+        if (!createdVector?.objectId) {
             throw new Error('Failed to find created EndlessVector object in transaction response');
         }
 
         // Create and return the EndlessVector instance
         return new EndlessVector({
+            ...params,
             suiClient,
             id: createdVector.objectId,
             packageId: normalizedPackageId,
@@ -248,7 +256,7 @@ export default class EndlessVector {
         }
 
         const vectorInput = tx.moveCall({
-            target: `${normalizedPackageId}::endless_vector::empty`,
+            target: `${normalizedPackageId}::endless_walrus::empty`,
             arguments: [],
         });
 
@@ -278,13 +286,13 @@ export default class EndlessVector {
      * @param {Uint8Array} arr - The byte array to push to the vector
      * @param {Transaction} tx - The transaction object to append the move calls to
      * @returns {Transaction} The transaction object with the push operations added
-     * @throws {Error} If the array is larger than 120KB (10 * 12KB)
+     * @throws {Error} If the array is larger than 120KB (10 * 12KB) — callers should use push() which falls back to walrus.pushBlob() automatically
      */
     static composePushTransaction(packageId, vectorInput, arr, tx) {
         const maxArgLength = 12 * 1024;
         if (arr.length <= maxArgLength) {
                 tx.moveCall({
-                        target: `${packageId}::endless_vector::push_back`,
+                        target: `${packageId}::endless_walrus::push_back_bytes`,
                         arguments: [
                             vectorInput,
                             tx.pure(bcs.vector(bcs.u8()).serialize(arr)),
@@ -308,7 +316,7 @@ export default class EndlessVector {
                 args.push(tx.pure(bcs.vector(bcs.u8()).serialize(chunks[i])));
             }
             tx.moveCall({
-                    target: `${packageId}::endless_vector::compose_and_push_back`,
+                    target: `${packageId}::endless_walrus::compose_and_push_back`,
                     arguments: args,
                 });
         } else {
@@ -365,16 +373,26 @@ export default class EndlessVector {
         if (!this.isWritable) {
             throw new Error('EndlessVector is not writable, packageId and signAndExecuteTransaction are required');
         }
+
+        const maxBytesPerTx = 10 * 12 * 1024;
+        if (arr instanceof Uint8Array && arr.length > maxBytesPerTx) {
+            if (!this.walrus) {
+                throw new Error('Array too large for a single tx and no Walrus client configured');
+            }
+            return !!(await this.walrus.pushBlob(arr, params));
+        }
+
         const tx = this.getPushTransaction(arr);
         const digest = await this._signAndExecuteTransaction(tx);
 
-        const transactionBlockResponse = await this.suiClient.waitForTransaction({
-            digest: digest,
+        const txResult = await this.suiClient.waitForTransaction({
+            digest,
+            include: { effects: true },
             timeout: params.timeout || 30000,
-            pollIntervalMs: params.pollIntervalMs || 1000,
-            options: { showEffects: true },
+            pollInterval: params.pollIntervalMs || 1000,
         });
-        if (transactionBlockResponse?.effects?.status?.status !== 'success') {
+        const txData = txResult.Transaction ?? txResult.FailedTransaction;
+        if (!txData?.status?.success) {
             throw new Error('Transaction failed');
         }
 
@@ -414,7 +432,7 @@ export default class EndlessVector {
             const objectRefs = otherIds.map(id => tx.object(id));
 
             tx.moveCall({
-                target: `${this._packageId}::endless_vector::append`,
+                target: `${this._packageId}::endless_walrus::append`,
                 arguments: [
                     tx.object(this.id),
                     tx.makeMoveVec({ elements: objectRefs }),
@@ -425,7 +443,7 @@ export default class EndlessVector {
             const otherEndlessVectorId = (typeof other === 'object' && other.id) ? other.id : other;
 
             tx.moveCall({
-                target: `${this._packageId}::endless_vector::concat`,
+                target: `${this._packageId}::endless_walrus::concat`,
                 arguments: [
                     tx.object(this.id),
                     tx.object(otherEndlessVectorId),
@@ -456,17 +474,136 @@ export default class EndlessVector {
         const tx = this.getConcatTransaction(other);
         const digest = await this._signAndExecuteTransaction(tx);
 
-        const transactionBlockResponse = await this.suiClient.waitForTransaction({
-            digest: digest,
+        const txResult = await this.suiClient.waitForTransaction({
+            digest,
+            include: { effects: true },
             timeout: params.timeout || 30000,
-            pollIntervalMs: params.pollIntervalMs || 1000,
-            options: { showEffects: true },
+            pollInterval: params.pollIntervalMs || 1000,
         });
-        if (transactionBlockResponse?.effects?.status?.status !== 'success') {
+        const txData = txResult.Transaction ?? txResult.FailedTransaction;
+        if (!txData?.status?.success) {
             throw new Error('Transaction failed');
         }
 
         this.reInitialize(); // force re-initialization to load new data
+
+        return true;
+    }
+
+    /**
+     * Creates a transaction to archive the current history of this EndlessVector.
+     * Moves all history items into a new archive entry, freeing up history capacity.
+     * Note: this method only creates the transaction, it does not sign or execute it.
+     *
+     * @param {Transaction} [txToAppendTo=null] - Optional transaction to append to
+     * @returns {Transaction} The transaction object to be signed and executed
+     * @throws {Error} If packageId is not set
+     */
+    getArchiveTransaction(txToAppendTo = null) {
+        if (!this._packageId) {
+            throw new Error('packageId is required to compose archive transaction');
+        }
+
+        const tx = txToAppendTo ?? new Transaction();
+
+        tx.moveCall({
+            target: `${this._packageId}::endless_walrus::archive`,
+            arguments: [tx.object(this.id)],
+        });
+
+        return tx;
+    }
+
+    /**
+     * Archives the current history of this EndlessVector, creating and executing the necessary transaction.
+     * Moves all history items into a new archive entry to free up history capacity for future pushes.
+     * Requires the instance to be writable (packageId and signAndExecuteTransaction must be provided).
+     *
+     * @param {?Object} params - Configuration parameters
+     * @param {?Number} [params.timeout] - wait for transaction confirmation timeout in ms, default 30000
+     * @param {?Number} [params.pollIntervalMs] - wait for transaction confirmation poll interval in ms, default 1000
+     * @returns {Promise<boolean>} True if the archive was successful
+     * @throws {Error} If the instance is not writable or if the transaction fails
+     */
+    async archive(params = {}) {
+        if (!this.isWritable) {
+            throw new Error('EndlessVector is not writable, packageId and signAndExecuteTransaction are required');
+        }
+
+        const tx = this.getArchiveTransaction();
+        const digest = await this._signAndExecuteTransaction(tx);
+
+        const txResult = await this.suiClient.waitForTransaction({
+            digest,
+            include: { effects: true },
+            timeout: params.timeout || 30000,
+            pollInterval: params.pollIntervalMs || 1000,
+        });
+        const txData = txResult.Transaction ?? txResult.FailedTransaction;
+        if (!txData?.status?.success) {
+            throw new Error('Transaction failed');
+        }
+
+        this.reInitialize();
+
+        return true;
+    }
+
+    /**
+     * Creates a transaction to burn the oldest archive entry of this EndlessVector.
+     * Burned items are permanently deleted and can no longer be read.
+     * Note: this method only creates the transaction, it does not sign or execute it.
+     *
+     * @param {Transaction} [txToAppendTo=null] - Optional transaction to append to
+     * @returns {Transaction} The transaction object to be signed and executed
+     * @throws {Error} If packageId is not set
+     */
+    getBurnArchiveTransaction(txToAppendTo = null) {
+        if (!this._packageId) {
+            throw new Error('packageId is required to compose burn_archive transaction');
+        }
+
+        const tx = txToAppendTo ?? new Transaction();
+
+        tx.moveCall({
+            target: `${this._packageId}::endless_walrus::burn_archive`,
+            arguments: [tx.object(this.id)],
+        });
+
+        return tx;
+    }
+
+    /**
+     * Burns the oldest archive entry of this EndlessVector, creating and executing the necessary transaction.
+     * Burned items are permanently deleted and can no longer be read.
+     * Requires the instance to be writable (packageId and signAndExecuteTransaction must be provided).
+     *
+     * @param {?Object} params - Configuration parameters
+     * @param {?Number} [params.timeout] - wait for transaction confirmation timeout in ms, default 30000
+     * @param {?Number} [params.pollIntervalMs] - wait for transaction confirmation poll interval in ms, default 1000
+     * @returns {Promise<boolean>} True if the burn was successful
+     * @throws {Error} If the instance is not writable or if the transaction fails
+     */
+    async burnArchive(params = {}) {
+        if (!this.isWritable) {
+            throw new Error('EndlessVector is not writable, packageId and signAndExecuteTransaction are required');
+        }
+
+        const tx = this.getBurnArchiveTransaction();
+        const digest = await this._signAndExecuteTransaction(tx);
+
+        const txResult = await this.suiClient.waitForTransaction({
+            digest,
+            include: { effects: true },
+            timeout: params.timeout || 30000,
+            pollInterval: params.pollIntervalMs || 1000,
+        });
+        const txData = txResult.Transaction ?? txResult.FailedTransaction;
+        if (!txData?.status?.success) {
+            throw new Error('Transaction failed');
+        }
+
+        this.reInitialize();
 
         return true;
     }
@@ -521,15 +658,8 @@ export default class EndlessVector {
         this.__initializationPromiseResolver = null;
         this.__initializationPromise = new Promise((res)=>{ this.__initializationPromiseResolver = res; });
 
-        /** @type {GetObjectParams} */
-        const getObjectParams = {
-            id: this.id,
-            options: {
-                showContent: true,
-            },
-        };
-        const endlessVectorObjectResponse = await this.suiClient.getObject(getObjectParams);
-        const endlessVectorObject = endlessVectorObjectResponse.data?.content?.fields;
+        const { object } = await this.suiClient.getObject({ objectId: this.id, include: { json: true } });
+        const endlessVectorObject = object?.json;
 
         this.binaryLength = parseInt(endlessVectorObject?.binary_length || 0);
         this.length = parseInt(endlessVectorObject?.length || 0);
@@ -544,12 +674,13 @@ export default class EndlessVector {
         this._items = [];
         if (endlessVectorObject?.items && endlessVectorObject.items.length) {
             for (const item of endlessVectorObject.items) {
-                this._items.push(new Uint8Array(item));
+                this._items.push(EndlessVectorItem.fromGrpcJson(item, { endlessVector: this }));
             }
         }
 
-        this.archiveTableId = endlessVectorObject?.archive?.fields?.id?.id;
-        this.historyTableId = endlessVectorObject?.history?.fields?.id?.id;
+        // In gRPC json, Table<K,V> appears as { id: "0x...", size: "..." } — id is a plain string
+        this.archiveTableId = endlessVectorObject?.archive?.id;
+        this.historyTableId = endlessVectorObject?.history?.id;
 
         this._isInitialized = true;
         this.__initializationPromiseResolver();
@@ -581,27 +712,19 @@ export default class EndlessVector {
             throw new Error('historyTableId is not set');
         }
 
-        /** @type {GetDynamicFieldsParams} */
-        const getDynamicFieldsParams  = {
-            parentId: this.historyTableId,
-            options: {
-                showContent: true,
-                showType: true,
-            },
-        };
-
+        let cursor = undefined;
         let resp = null;
         let haveToLookMore = true;
 
         do {
-            resp  = await this.suiClient.getDynamicFields(getDynamicFieldsParams);
-            if (resp && resp.data && resp.data.length) {
-                for (const df of resp.data) {
-                    if (df?.objectId) {
-                        const itemHistoryIndex = parseInt(df.name.value);
+            resp = await this.suiClient.listDynamicFields({ parentId: this.historyTableId, cursor });
+            if (resp?.dynamicFields?.length) {
+                for (const df of resp.dynamicFields) {
+                    if (df.fieldId) {
+                        const itemHistoryIndex = EndlessVector._decodeBcsU64(df.name.bcs);
                         const endlessVectorHistory = new EndlessVectorHistory({
                             suiClient: this.suiClient,
-                            id: df.objectId,
+                            id: df.fieldId,
                             index: itemHistoryIndex,
                             endlessVector: this,
                         });
@@ -611,7 +734,7 @@ export default class EndlessVector {
                         }
                     }
                 }
-                getDynamicFieldsParams.cursor = resp.nextCursor;
+                cursor = resp.cursor;
             }
         } while (resp?.hasNextPage && haveToLookMore);
 
@@ -644,27 +767,19 @@ export default class EndlessVector {
             throw new Error('archiveTableId is not set');
         }
 
-        /** @type {GetDynamicFieldsParams} */
-        const getDynamicFieldsParams  = {
-            parentId: this.archiveTableId,
-            options: {
-                showContent: true,
-                showType: true,
-            },
-        };
-
+        let cursor = undefined;
         let resp = null;
         let haveToLookMore = true;
 
         do {
-            resp  = await this.suiClient.getDynamicFields(getDynamicFieldsParams);
-            if (resp && resp.data && resp.data.length) {
-                for (const df of resp.data) {
-                    if (df?.objectId) {
-                        const itemArchiveIndex = parseInt(df.name.value);
+            resp = await this.suiClient.listDynamicFields({ parentId: this.archiveTableId, cursor });
+            if (resp?.dynamicFields?.length) {
+                for (const df of resp.dynamicFields) {
+                    if (df.fieldId) {
+                        const itemArchiveIndex = EndlessVector._decodeBcsU64(df.name.bcs);
                         const endlessVectorArchive = new EndlessVectorArchive({
                             suiClient: this.suiClient,
-                            id: df.objectId,
+                            id: df.fieldId,
                             index: itemArchiveIndex,
                             endlessVector: this,
                         });
@@ -674,7 +789,7 @@ export default class EndlessVector {
                         }
                     }
                 }
-                getDynamicFieldsParams.cursor = resp.nextCursor;
+                cursor = resp.cursor;
             }
         } while (resp?.hasNextPage && haveToLookMore);
 
@@ -695,27 +810,24 @@ export default class EndlessVector {
      */
     async loadHistoryItemsBunch(historyItems) {
         const ids = historyItems.map(hi => hi.id);
-        let results = [];
+        let objects = [];
         try {
-            results = await this.suiClient.multiGetObjects({
-                ids: ids,
-                options: { showContent: true,  },
-            });
+            const res = await this.suiClient.getObjects({ objectIds: ids, include: { json: true } });
+            objects = res.objects ?? [];
         } catch(e) {
             console.error(e);
         }
 
-        if (results && results.length) {
-            for (const res of results) {
-                const fields = res?.data?.content?.fields?.value?.fields;
-                const id = res?.data?.content?.fields?.id?.id;
+        for (const obj of objects) {
+            // Dynamic field Field<K,V>: json = { id: { id: "..." }, name: K, value: V_fields }
+            const fields = obj?.json?.value;
+            const id = obj?.json?.id?.id ?? obj?.objectId;
 
-                historyItems.forEach(hi => {
-                    if (hi.id === id) {
-                        hi.setFields(fields);
-                    }
-                });
-            }
+            historyItems.forEach(hi => {
+                if (hi.id === id) {
+                    hi.setFields(fields);
+                }
+            });
         }
     }
 
@@ -804,27 +916,23 @@ export default class EndlessVector {
      */
     async loadArchiveItemsBunch(archiveItems) {
         const ids = archiveItems.map(ai => ai.id);
-        let results = [];
+        let objects = [];
         try {
-            results = await this.suiClient.multiGetObjects({
-                ids: ids,
-                options: { showContent: true,  },
-            });
+            const res = await this.suiClient.getObjects({ objectIds: ids, include: { json: true } });
+            objects = res.objects ?? [];
         } catch(e) {
             console.error(e);
         }
 
-        if (results && results.length) {
-            for (const res of results) {
-                const fields = res?.data?.content?.fields?.value?.fields;
-                const id = res?.data?.content?.fields?.id?.id;
+        for (const obj of objects) {
+            const fields = obj?.json?.value;
+            const id = obj?.json?.id?.id ?? obj?.objectId;
 
-                archiveItems.forEach(ai => {
-                    if (ai.id === id) {
-                        ai.setFields(fields);
-                    }
-                });
-            }
+            archiveItems.forEach(ai => {
+                if (ai.id === id) {
+                    ai.setFields(fields);
+                }
+            });
         }
     }
 
@@ -948,10 +1056,10 @@ export default class EndlessVector {
             // in current items
             if (this.firstItemIsFromPreviousHistory) {
                 const indexInItems = i - this.firstNotHistoryIndex + 1;
-                return this._items[indexInItems];
+                return await this._items[indexInItems].bytes();
             } else {
                 const indexInItems = i - this.firstNotHistoryIndex;
-                return this._items[indexInItems];
+                return await this._items[indexInItems].bytes();
             }
         }
 
@@ -971,11 +1079,22 @@ export default class EndlessVector {
         if (i < this.historyItemsCount) {
             const historyItem = await this.getHistory(i);
             if (historyItem) {
-                return historyItem.getSuffixStoredBytes();
+                return await historyItem.getSuffixStoredBytes();
             }
         } else if (this._history[i - 1] && this.firstItemIsFromPreviousHistory) {
-            // if there is no such history item, but previous exists, then suffix is the first item of the EndlessVector object items itself 
-            return this._items[0];
+            // if there is no such history item, but previous exists, then suffix is the first item of the EndlessVector object items itself
+            return await this._items[0].bytes();
         }
+    }
+
+    /**
+     * Decode a little-endian u64 from a BCS-encoded Uint8Array (gRPC dynamic-field name).
+     * @param {Uint8Array} bcsBytes
+     * @returns {number}
+     */
+    static _decodeBcsU64(bcsBytes) {
+        const b = bcsBytes instanceof Uint8Array ? bcsBytes : new Uint8Array(bcsBytes);
+        const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+        return Number(dv.getBigUint64(0, true));
     }
 }

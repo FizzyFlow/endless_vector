@@ -1,6 +1,8 @@
 
+import EndlessVectorItem from './EndlessVectorItem.js';
+
 /**
- * @typedef {import('@mysten/sui/client').SuiClient} SuiClient
+ * @typedef {import('@mysten/sui/grpc').SuiGrpcClient} SuiGrpcClient
  * @typedef {import('./EndlessVector.js').default} EndlessVector
  * @typedef {import('./EndlessVectorArchive.js').default} EndlessVectorArchive
  */
@@ -146,12 +148,14 @@ export default class EndlessVectorHistory {
                 indexInItems = i - this.startsAt + 1;
             }
 
+            const context = { endlessVector: this._endlessVector, endlessVectorHistory: this };
+
             if (indexInItems < (this._fields.items.length - 1)) {
-                return new Uint8Array(this._fields.items[indexInItems]);
+                return await EndlessVectorItem.fromGrpcJson(this._fields.items[indexInItems], context).bytes();
             } else if (indexInItems === (this._fields.items.length - 1)) {
                 if (this.followedByNextBytes) {
                     // if this item is child of archive, get suffix from next item of archive, otherwise from endless vector
-                    const suffix = this._endlessVectorArchive ? 
+                    const suffix = this._endlessVectorArchive ?
                         (await this._endlessVectorArchive.getSuffixFromHistoryItemOfIndex(this.index + 1)) :
                         (await this._endlessVector.getSuffixFromHistoryItemOfIndex(this.index + 1));
 
@@ -159,13 +163,11 @@ export default class EndlessVectorHistory {
                         throw new Error('suffix bytes length mismatch');
                     }
 
-                    const current = new Uint8Array(this._fields.items[indexInItems]);
-                    const combined = new Uint8Array(current.length + suffix.length);
-                    combined.set(current);
-                    combined.set(suffix, current.length);
-                    return combined;
+                    const head = EndlessVectorItem.fromGrpcJson(this._fields.items[indexInItems], context);
+                    const tail = new EndlessVectorItem({ type: 'bytes', bytes: suffix });
+                    return EndlessVectorItem.concatBytes(head, tail);
                 } else {
-                    return new Uint8Array(this._fields.items[indexInItems]);
+                    return await EndlessVectorItem.fromGrpcJson(this._fields.items[indexInItems], context).bytes();
                 }
             }
         }
@@ -178,10 +180,12 @@ export default class EndlessVectorHistory {
      * to the last item of the previous history segment.
      * @returns {Uint8Array} The suffix bytes, or empty array if none stored
      */
-    getSuffixStoredBytes() {
+    async getSuffixStoredBytes() {
         if (this.firstItemIsFromPreviousHistory) {
-            return new Uint8Array(this._fields.items[0]);
+            const context = { endlessVector: this._endlessVector, endlessVectorHistory: this };
+            return await EndlessVectorItem.fromGrpcJson(this._fields.items[0], context).bytes();
         }
         return new Uint8Array();
     }
+
 }

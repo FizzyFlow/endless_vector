@@ -22,6 +22,10 @@ Endless Vector solves the problem of Sui's object size [constraints](https://mov
 - **Parallel Transaction Support**: Ready for parallel transactions to create concatenated vector
 - **Tested**: Move unit tests and JS integration tests
 
+## Online Demo
+
+- **Online Demo**(https://fizzy.wal.app/)
+
 ## Documentation
 
 - **[JavaScript SDK Documentation](js/)** - Detailed API reference and usage examples for the JavaScript/TypeScript SDK

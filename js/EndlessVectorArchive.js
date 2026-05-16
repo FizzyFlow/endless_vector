@@ -1,8 +1,7 @@
 import EndlessVectorHistory from './EndlessVectorHistory.js';
 
 /**
- * @typedef {import('@mysten/sui/client').SuiClient} SuiClient
- * @typedef {import('@mysten/sui/client').GetDynamicFieldsParams} GetDynamicFieldsParams
+ * @typedef {import('@mysten/sui/grpc').SuiGrpcClient} SuiGrpcClient
  * @typedef {import('./EndlessVector.js').default} EndlessVector
  */
 
@@ -10,14 +9,14 @@ export default class EndlessVectorArchive {
     /**
      * Creates a new EndlessVectorArchive instance.
      * @param {Object} params - Configuration parameters
-     * @param {SuiClient} [params.suiClient] - Sui client instance for blockchain interactions
+     * @param {SuiGrpcClient} [params.suiClient] - Sui gRPC client instance for blockchain interactions
      * @param {string} [params.id] - ID or address of the EndlessVectorArchive on the Sui blockchain
      * @param {number} [params.index=0] - Index position of this archive item in the sequence
      * @param {EndlessVector} [params.endlessVector] - Reference to the parent EndlessVector instance
      * @param {Object} [params.fields] - Raw field data from the blockchain object
      */
     constructor(params = {}) {
-        /** @type {SuiClient} */
+        /** @type {SuiGrpcClient} */
         this.suiClient = params.suiClient;
         /** @type {string} */
         this.id = params.id;
@@ -47,8 +46,8 @@ export default class EndlessVectorArchive {
      */
     setFields(fields) {
         this._fields = fields;
-        this.historyTableId = fields?.history?.fields?.id?.id;
-        this.historyItemsCount = parseInt(fields?.history?.fields?.size || '0');
+        this.historyTableId = fields?.history?.id;
+        this.historyItemsCount = parseInt(fields?.history?.size || '0');
     }
 
     /**
@@ -75,7 +74,7 @@ export default class EndlessVectorArchive {
      * @returns {number} The starting index (inclusive)
      */
     get startsAt() {
-        return this.endsAt - this.length;
+        return this.endsAt - this.length + 1;
     }
 
     /**
@@ -134,40 +133,30 @@ export default class EndlessVectorArchive {
             throw new Error('historyTableId is not set');
         }
 
-        /** @type {GetDynamicFieldsParams} */
-        const getDynamicFieldsParams  = {
-            parentId: this.historyTableId,
-            options: {
-                showContent: true,
-                showType: true,
-            },
-        };
-
-        let resp = null;
+        let cursor = undefined;
         let haveToLookMore = true;
 
         do {
-            resp  = await this.suiClient.getDynamicFields(getDynamicFieldsParams);
-            if (resp && resp.data && resp.data.length) {
-                for (const df of resp.data) {
-                    if (df?.objectId) {
-                        const itemHistoryIndex = parseInt(df.name.value);
-                        const endlessVectorHistory = new EndlessVectorHistory({
-                            suiClient: this.suiClient,
-                            id: df.objectId,
-                            index: itemHistoryIndex,
-                            endlessVector: this._endlessVector,
-                            endlessVectorArchive: this,
-                        });
-                        this._history[itemHistoryIndex] = endlessVectorHistory;
-                        if (itemHistoryIndex === historyIndexInt) {
-                            haveToLookMore = false;
-                        }
+            const resp = await this.suiClient.listDynamicFields({ parentId: this.historyTableId, cursor });
+            for (const df of resp.dynamicFields ?? []) {
+                if (df?.fieldId) {
+                    const itemHistoryIndex = EndlessVectorArchive._decodeBcsU64(df.name.bcs);
+                    const endlessVectorHistory = new EndlessVectorHistory({
+                        suiClient: this.suiClient,
+                        id: df.fieldId,
+                        index: itemHistoryIndex,
+                        endlessVector: this._endlessVector,
+                        endlessVectorArchive: this,
+                    });
+                    this._history[itemHistoryIndex] = endlessVectorHistory;
+                    if (itemHistoryIndex === historyIndexInt) {
+                        haveToLookMore = false;
                     }
                 }
-                getDynamicFieldsParams.cursor = resp.nextCursor;
             }
-        } while (resp?.hasNextPage && haveToLookMore);
+            cursor = resp.cursor;
+            if (!resp.hasNextPage) break;
+        } while (haveToLookMore);
 
         if (!this._history[historyIndexInt]) {
             throw new Error(`History not found for index ${historyIndexInt}`);
@@ -206,11 +195,17 @@ export default class EndlessVectorArchive {
      * @returns {Promise<Uint8Array>} The suffix bytes from the history item
      * @throws {Error} If the index is out of range for this archive item
      */
+    static _decodeBcsU64(bcsBytes) {
+        const b = bcsBytes instanceof Uint8Array ? bcsBytes : new Uint8Array(bcsBytes);
+        const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+        return Number(dv.getBigUint64(0, true));
+    }
+
     async getSuffixFromHistoryItemOfIndex(i) {
         if (i < this.historyItemsCount) {
             const historyItem = await this.getHistory(i);
             if (historyItem) {
-                return historyItem.getSuffixStoredBytes();
+                return await historyItem.getSuffixStoredBytes();
             }
         }
 
