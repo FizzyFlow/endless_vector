@@ -1,5 +1,5 @@
 module endless_vector::endless_walrus {
-    const VERSION: u64 = 2;
+    const VERSION: u64 = 3;
 
     const SAFE_INNER_SIZE: u64 = 128*1024;  // Keep in object.items, more in history/archive
 
@@ -20,6 +20,9 @@ module endless_vector::endless_walrus {
     const ECannotConcatWithArchivedItems: u64 = 97;
     const ENotABytesItem: u64 = 100;
     const ENotABlobItem: u64 = 101;
+    const EIdMismatch: u64 = 102;
+    const ESealKeyAlreadySet: u64 = 103;
+    const ECannotConcatSealedVector: u64 = 104;
 
     public struct EndlessWalrusVector has key, store {
         id: UID,
@@ -43,6 +46,11 @@ module endless_vector::endless_walrus {
 
         made_with_version: u64, // version of the module when this EndlessWalrusVector was created
         meta: vector<u8>, // just in case we need to store some extra info in the future
+
+        // Seal-encrypted AES key for layered encryption. Set once via `set_seal_encrypted_key`.
+        // When `some`, SDKs MUST encrypt every pushed item with the wrapped AES key and decrypt on read.
+        // Scope is the vector's object id; see `seal_approve_endless_vector_owner`.
+        seal_encrypted_key: Option<vector<u8>>,
     }
 
     // EndlessWalrusHistory cannot have `drop` because EndlessWalrusItem has no `drop`.
@@ -125,6 +133,13 @@ module endless_vector::endless_walrus {
         transfer::transfer(endless_vector, ctx.sender());
     }
 
+    /// Seal policy: grants access iff the PTB sender owns `EndlessWalrusVector`.
+    /// The `id` is the vector's 32-byte object address — used by Seal IBE to derive
+    /// a resource-specific key; the Move code does not validate it.
+    public fun seal_approve_endless_vector_owner(id: vector<u8>, ev: &EndlessWalrusVector, _ctx: &TxContext) {
+        assert!(object::uid_to_bytes(&ev.id) == id, EIdMismatch);
+    }
+
     public fun empty(ctx: &mut TxContext): EndlessWalrusVector {
         EndlessWalrusVector {
             id: object::new(ctx),
@@ -148,7 +163,26 @@ module endless_vector::endless_walrus {
 
             made_with_version: VERSION,
             meta: vector::empty<u8>(),
+
+            seal_encrypted_key: std::option::none(),
         }
+    }
+
+    /// Attach a Seal-encrypted AES key to this vector. Settable once.
+    /// After this, the vector is considered "sealed" and SDKs must encrypt every push.
+    public fun set_seal_encrypted_key(ev: &mut EndlessWalrusVector, key: vector<u8>) {
+        assert!(std::option::is_none(&ev.seal_encrypted_key), ESealKeyAlreadySet);
+        ev.seal_encrypted_key = std::option::some(key);
+    }
+
+    /// Borrow the Seal-encrypted AES key (or `none` if vector is unsealed).
+    public fun seal_encrypted_key(ev: &EndlessWalrusVector): &Option<vector<u8>> {
+        &ev.seal_encrypted_key
+    }
+
+    /// True iff this vector has a Seal-encrypted AES key attached.
+    public fun is_sealed(ev: &EndlessWalrusVector): bool {
+        std::option::is_some(&ev.seal_encrypted_key)
     }
 
     /**
@@ -184,6 +218,11 @@ module endless_vector::endless_walrus {
         The second vector will be consumed (destroyed) in the process.
     */
     public fun concat(endless_v: &mut EndlessWalrusVector, other: EndlessWalrusVector) {
+        // Sealed vectors hold items encrypted under per-vector AES keys; merging two
+        // would require re-encrypting every item under one key. Not supported.
+        assert!(std::option::is_none(&endless_v.seal_encrypted_key), ECannotConcatSealedVector);
+        assert!(std::option::is_none(&other.seal_encrypted_key), ECannotConcatSealedVector);
+
         let EndlessWalrusVector {
             id: other_id,
             items: other_items,
@@ -201,6 +240,7 @@ module endless_vector::endless_walrus {
             burned_archive_count: _,
             made_with_version: _,
             meta: _,
+            seal_encrypted_key: _,
         } = other;
 
         // Cannot concat with a vector that has archived items
@@ -355,6 +395,7 @@ module endless_vector::endless_walrus {
             burned_archive_count: _,
             made_with_version: _,
             meta: _,
+            seal_encrypted_key: _,
         } = endless_v;
 
         // After flush, items must be empty.

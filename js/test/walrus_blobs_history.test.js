@@ -45,7 +45,7 @@ function makeSignAndExecute() {
     return async (tx) => {
         const result = await suiMaster.signAndExecuteTransaction({
             transaction: tx,
-            requestType: 'WaitForLocalExecution',
+            // requestType: 'WaitForLocalExecution',
         });
         return result.digest;
     };

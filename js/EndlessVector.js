@@ -2,6 +2,7 @@ import EndlessVectorHistory from './EndlessVectorHistory.js';
 import EndlessVectorArchive from './EndlessVectorArchive.js';
 import EndlessVectorItem from './EndlessVectorItem.js';
 import EndlessVectorWalrus from './EndlessVectorWalrus.js';
+import EndlessVectorSeal from './EndlessVectorSeal.js';
 import { Transaction } from '@mysten/sui/transactions';
 import { bcs } from '@mysten/sui/bcs';
 import ids from './ids.js';
@@ -96,6 +97,19 @@ export default class EndlessVector {
          * @type {?EndlessVectorWalrus}
          */
         this.walrus = new EndlessVectorWalrus({ ...params, endlessVector: this });
+
+        /**
+         * EndlessVectorSeal companion. Always present; only "enabled" when sealClient is supplied.
+         * @type {EndlessVectorSeal}
+         */
+        this.seal = new EndlessVectorSeal({ ...params, endlessVector: this });
+
+        /**
+         * Raw seal_encrypted_key bytes loaded from the on-chain object during initialize().
+         * `null` for unsealed vectors. SDK callers usually don't need to read this directly.
+         * @type {?Uint8Array}
+         */
+        this.sealEncryptedKey = null;
     }
 
     /**
@@ -135,13 +149,24 @@ export default class EndlessVector {
         }
 
         // Create transaction to call empty_entry
+        // Sealed mode requires the vector id (only known after the first tx) to scope the
+        // Seal-encrypted AES key. We thus:
+        //   tx 1 — create an empty vector
+        //   tx 2 — set_seal_encrypted_key
+        //   tx 3+ — push initial `array` items (encrypted) via the normal push() path
+        // Unsealed mode keeps the single-tx fast path below unchanged.
+        const sealRequested = !!params.sealClient;
+        const sealItemsToPush = sealRequested ? array : null;
+        const useArray = sealRequested ? null : array;
+
         const tx = new Transaction();
 
         if (gasCoin) {
             tx.setGasPayment([gasCoin]);
         }
 
-        if (array && array.length) {
+        if (useArray && useArray.length) {
+            const array = useArray;
             if ((array instanceof Uint8Array)) {
                 // single chunk
                 const vectorInput = await EndlessVector.getCreateTransactionAndReturnVectorInput({
@@ -173,15 +198,20 @@ export default class EndlessVector {
             });
         }
 
-        // Execute transaction
-        const digest = await signAndExecuteTransaction(tx);
+        // Execute transaction — callback may return a digest string OR a rich tx-data object
+        const execResult = await signAndExecuteTransaction(tx);
+        const digest = typeof execResult === 'string'
+            ? execResult
+            : execResult?.digest ?? execResult?.data?.digest;
+        if (!digest) throw new Error('signAndExecuteTransaction returned no digest');
 
-        // Wait for transaction to complete
+        // create() always needs objectTypes to find the new EndlessVector, which the
+        // callback's effects don't include — so we always do a waitForTransaction here.
         const txResult = await suiClient.waitForTransaction({
             digest,
             include: { effects: true, objectTypes: true },
             timeout: options.timeout || 30000,
-            pollInterval: options.pollIntervalMs || 1000,
+            pollInterval: options.pollIntervalMs || 200,
         });
         const txData = txResult.Transaction ?? txResult.FailedTransaction;
         if (!txData?.status?.success) {
@@ -199,14 +229,40 @@ export default class EndlessVector {
             throw new Error('Failed to find created EndlessVector object in transaction response');
         }
 
-        // Create and return the EndlessVector instance
-        return new EndlessVector({
+        // Create the EndlessVector instance
+        const ev = new EndlessVector({
             ...params,
             suiClient,
             id: createdVector.objectId,
             packageId: normalizedPackageId,
             signAndExecuteTransaction,
         });
+
+        // Seal layer: generate AES key, Seal-wrap it scoped to the new vector id, attach on-chain.
+        // Subsequent push() calls will encrypt every item automatically.
+        if (sealRequested) {
+            const aesKey = EndlessVectorSeal.generateAesKey();
+            ev.seal.setAesKey(aesKey);
+            const wrappedKey = await ev.seal.wrapAesKey(aesKey);
+
+            const setKeyTx = new Transaction();
+            setKeyTx.moveCall({
+                target: `${normalizedPackageId}::endless_walrus::set_seal_encrypted_key`,
+                arguments: [
+                    setKeyTx.object(ev.id),
+                    setKeyTx.pure(bcs.vector(bcs.u8()).serialize(wrappedKey)),
+                ],
+            });
+            await ev.executeAndWaitForTransaction(setKeyTx, options);
+            ev.sealEncryptedKey = wrappedKey;
+
+            // Now push any initial items — push() will encrypt them transparently.
+            if (sealItemsToPush && sealItemsToPush.length) {
+                await ev.push(sealItemsToPush, options);
+            }
+        }
+
+        return ev;
     }
 
     /**
@@ -269,6 +325,55 @@ export default class EndlessVector {
 
     get isWritable() {
         return !!(this._packageId && this._signAndExecuteTransaction);
+    }
+
+    /**
+     * Executes a transaction via the configured `_signAndExecuteTransaction` callback and
+     * resolves to the tx data containing effects.
+     *
+     * If the callback already returns an object with `.effects` (e.g. callers that use
+     * `WaitForLocalExecution` and pass the full response through), we trust that result
+     * and skip an extra `waitForTransaction` poll round-trip. Otherwise we treat the
+     * return value as a digest string and poll until the tx lands.
+     *
+     * @param {Transaction} tx
+     * @param {Object} [params]
+     * @param {number} [params.timeout=30000]
+     * @param {number} [params.pollIntervalMs=200]
+     * @param {Object} [params.include={ effects: true }]
+     * @returns {Promise<Object>} Resolves to the tx data ({ digest, effects, ... }).
+     * @throws {Error} If the callback returns no digest or the tx failed.
+     */
+    async executeAndWaitForTransaction(tx, params = {}) {
+        const result = await this._signAndExecuteTransaction(tx);
+
+        // Rich return: tx data containing effects is already present. Accept either the raw
+        // tx data ({ digest, effects, status }) or a wrapper exposing effects via `.data`
+        // (e.g. suidouble's SuiTransaction). In either case, skip the extra polling round-trip.
+        if (result && typeof result === 'object') {
+            const txData = result.effects ? result : (result.data?.effects ? result.data : null);
+            if (txData) {
+                if (txData.status && txData.status.success === false) {
+                    throw new Error('Transaction failed');
+                }
+                return txData;
+            }
+        }
+
+        const digest = typeof result === 'string' ? result : result?.digest;
+        if (!digest) throw new Error('signAndExecuteTransaction returned no digest');
+
+        const txResult = await this.suiClient.waitForTransaction({
+            digest,
+            include: params.include ?? { effects: true },
+            timeout: params.timeout || 30000,
+            pollInterval: params.pollIntervalMs || 200,
+        });
+        const txData = txResult.Transaction ?? txResult.FailedTransaction;
+        if (!txData?.status?.success) {
+            throw new Error('Transaction failed');
+        }
+        return txData;
     }
 
     /** 
@@ -366,12 +471,25 @@ export default class EndlessVector {
      * @param {Uint8Array|Uint8Array[]} arr - Byte array or array of byte arrays to push
      * @param {?Object} params - Configuration parameters
      * @param {?Number} [params.timeout] - wait for transaction confirmation timeout in ms, default 30000
-     * @param {?Number} [params.pollIntervalMs] - wait for transaction confirmation poll interval in ms, default 1000
+     * @param {?Number} [params.pollIntervalMs] - wait for transaction confirmation poll interval in ms, default 200
      * @return {Promise<boolean>} True if the push was successful
     */
     async push(arr, params = {}) {
         if (!this.isWritable) {
             throw new Error('EndlessVector is not writable, packageId and signAndExecuteTransaction are required');
+        }
+
+        // When the vector is sealed, transparently encrypt every item before it goes on-chain.
+        // Encryption adds 28 bytes (12B nonce + 16B tag), so it can shift items across the
+        // 120 KB walrus threshold — encrypt first, then route.
+        if (this.seal?.isEnabled) {
+            if (arr instanceof Uint8Array) {
+                arr = await this.seal.encryptItem(arr);
+            } else if (Array.isArray(arr)) {
+                const encrypted = [];
+                for (const item of arr) encrypted.push(await this.seal.encryptItem(item));
+                arr = encrypted;
+            }
         }
 
         const maxBytesPerTx = 10 * 12 * 1024;
@@ -383,18 +501,7 @@ export default class EndlessVector {
         }
 
         const tx = this.getPushTransaction(arr);
-        const digest = await this._signAndExecuteTransaction(tx);
-
-        const txResult = await this.suiClient.waitForTransaction({
-            digest,
-            include: { effects: true },
-            timeout: params.timeout || 30000,
-            pollInterval: params.pollIntervalMs || 1000,
-        });
-        const txData = txResult.Transaction ?? txResult.FailedTransaction;
-        if (!txData?.status?.success) {
-            throw new Error('Transaction failed');
-        }
+        await this.executeAndWaitForTransaction(tx, params);
 
         this.reInitialize(); // force re-initialization to load new data
 
@@ -462,7 +569,7 @@ export default class EndlessVector {
      * @param {string|EndlessVector|Array<string|EndlessVector>} other - The ID of the EndlessVector to concatenate, an EndlessVector instance, or an array of IDs/instances to append
      * @param {?Object} params - Configuration parameters
      * @param {?Number} [params.timeout] - wait for transaction confirmation timeout in ms, default 30000
-     * @param {?Number} [params.pollIntervalMs] - wait for transaction confirmation poll interval in ms, default 1000
+     * @param {?Number} [params.pollIntervalMs] - wait for transaction confirmation poll interval in ms, default 200
      * @return {Promise<boolean>} True if the concat was successful
      * @throws {Error} If the instance is not writable, if the transaction fails, or if any vector has archived items
     */
@@ -471,19 +578,14 @@ export default class EndlessVector {
             throw new Error('EndlessVector is not writable, packageId and signAndExecuteTransaction are required');
         }
 
-        const tx = this.getConcatTransaction(other);
-        const digest = await this._signAndExecuteTransaction(tx);
-
-        const txResult = await this.suiClient.waitForTransaction({
-            digest,
-            include: { effects: true },
-            timeout: params.timeout || 30000,
-            pollInterval: params.pollIntervalMs || 1000,
-        });
-        const txData = txResult.Transaction ?? txResult.FailedTransaction;
-        if (!txData?.status?.success) {
-            throw new Error('Transaction failed');
+        // Sealed vectors hold items encrypted under per-vector AES keys; merging two would
+        // require re-encrypting every item under one key. Refuse early.
+        if (this.sealEncryptedKey) {
+            throw new Error('concat is not supported on sealed vectors');
         }
+
+        const tx = this.getConcatTransaction(other);
+        await this.executeAndWaitForTransaction(tx, params);
 
         this.reInitialize(); // force re-initialization to load new data
 
@@ -521,7 +623,7 @@ export default class EndlessVector {
      *
      * @param {?Object} params - Configuration parameters
      * @param {?Number} [params.timeout] - wait for transaction confirmation timeout in ms, default 30000
-     * @param {?Number} [params.pollIntervalMs] - wait for transaction confirmation poll interval in ms, default 1000
+     * @param {?Number} [params.pollIntervalMs] - wait for transaction confirmation poll interval in ms, default 200
      * @returns {Promise<boolean>} True if the archive was successful
      * @throws {Error} If the instance is not writable or if the transaction fails
      */
@@ -531,18 +633,7 @@ export default class EndlessVector {
         }
 
         const tx = this.getArchiveTransaction();
-        const digest = await this._signAndExecuteTransaction(tx);
-
-        const txResult = await this.suiClient.waitForTransaction({
-            digest,
-            include: { effects: true },
-            timeout: params.timeout || 30000,
-            pollInterval: params.pollIntervalMs || 1000,
-        });
-        const txData = txResult.Transaction ?? txResult.FailedTransaction;
-        if (!txData?.status?.success) {
-            throw new Error('Transaction failed');
-        }
+        await this.executeAndWaitForTransaction(tx, params);
 
         this.reInitialize();
 
@@ -580,7 +671,7 @@ export default class EndlessVector {
      *
      * @param {?Object} params - Configuration parameters
      * @param {?Number} [params.timeout] - wait for transaction confirmation timeout in ms, default 30000
-     * @param {?Number} [params.pollIntervalMs] - wait for transaction confirmation poll interval in ms, default 1000
+     * @param {?Number} [params.pollIntervalMs] - wait for transaction confirmation poll interval in ms, default 200
      * @returns {Promise<boolean>} True if the burn was successful
      * @throws {Error} If the instance is not writable or if the transaction fails
      */
@@ -590,18 +681,7 @@ export default class EndlessVector {
         }
 
         const tx = this.getBurnArchiveTransaction();
-        const digest = await this._signAndExecuteTransaction(tx);
-
-        const txResult = await this.suiClient.waitForTransaction({
-            digest,
-            include: { effects: true },
-            timeout: params.timeout || 30000,
-            pollInterval: params.pollIntervalMs || 1000,
-        });
-        const txData = txResult.Transaction ?? txResult.FailedTransaction;
-        if (!txData?.status?.success) {
-            throw new Error('Transaction failed');
-        }
+        await this.executeAndWaitForTransaction(tx, params);
 
         this.reInitialize();
 
@@ -681,6 +761,10 @@ export default class EndlessVector {
         // In gRPC json, Table<K,V> appears as { id: "0x...", size: "..." } — id is a plain string
         this.archiveTableId = endlessVectorObject?.archive?.id;
         this.historyTableId = endlessVectorObject?.history?.id;
+
+        // seal_encrypted_key is an Option<vector<u8>> on-chain.
+        // None → null/undefined; Some(bytes) → base64 string (or array fallback).
+        this.sealEncryptedKey = EndlessVector._decodeOptionVectorU8(endlessVectorObject?.seal_encrypted_key);
 
         this._isInitialized = true;
         this.__initializationPromiseResolver();
@@ -1017,11 +1101,26 @@ export default class EndlessVector {
 
     /**
      * Retrieves the byte array at the specified index from either current items or history.
+     * For sealed vectors, transparently decrypts the item via the seal companion.
      * @param {number} i - The index to retrieve
      * @returns {Promise<Uint8Array>} The byte array at the specified index
      * @throws {Error} If the index is out of range or cannot be found
      */
     async at(i) {
+        const raw = await this._atRaw(i);
+        if (this.seal?.isEnabled || this.sealEncryptedKey) {
+            return await this.seal.decryptItem(raw);
+        }
+        return raw;
+    }
+
+    /**
+     * Raw read of the byte array at the specified index. Returns ciphertext for sealed vectors.
+     * Kept separate so `at()` can wrap with optional decryption without rewriting routing.
+     * @param {number} i
+     * @returns {Promise<Uint8Array>}
+     */
+    async _atRaw(i) {
         await this.initialize();
 
         if (i < 0 || i >= this.length) {
@@ -1092,6 +1191,28 @@ export default class EndlessVector {
      * @param {Uint8Array} bcsBytes
      * @returns {number}
      */
+    /**
+     * Decode a (possibly-Option) `vector<u8>` from gRPC json. gRPC serializes binary fields
+     * as base64 strings, but other code paths may pass through Uint8Array, plain arrays of
+     * bytes, or { vec: [...] } shapes — handle all of them.
+     */
+    static _decodeOptionVectorU8(value) {
+        if (value == null) return null;
+        if (value instanceof Uint8Array) return value;
+        if (typeof value === 'string') {
+            if (!value.length) return null;
+            const bin = (typeof Buffer !== 'undefined')
+                ? Buffer.from(value, 'base64')
+                : Uint8Array.from(atob(value), c => c.charCodeAt(0));
+            return new Uint8Array(bin.buffer, bin.byteOffset ?? 0, bin.byteLength ?? bin.length);
+        }
+        if (Array.isArray(value)) return value.length ? new Uint8Array(value) : null;
+        if (typeof value === 'object' && Array.isArray(value.vec)) {
+            return value.vec.length ? new Uint8Array(value.vec) : null;
+        }
+        return null;
+    }
+
     static _decodeBcsU64(bcsBytes) {
         const b = bcsBytes instanceof Uint8Array ? bcsBytes : new Uint8Array(bcsBytes);
         const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);

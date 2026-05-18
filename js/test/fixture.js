@@ -3,6 +3,7 @@ import path from 'path';
 import { SuiMaster, SuiLocalTestValidator } from 'suidouble';
 import LocalnodeWalrusTestState from '../../../seal_walrus_localnet/includes/LocalnodeWalrusTestState.js';
 import LocalnodeWalrusTestServer from '../../../seal_walrus_localnet/includes/LocalnodeWalrusTestServer.js';
+import LocalnodeSealTestState from '../../../seal_walrus_localnet/includes/LocalnodeSealTestState.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MOVE_PKG_PATH = path.join(__dirname, '../../move');
@@ -71,7 +72,14 @@ export function setupEndlessVectorLocalnet(opts = {}) {
 
         const walrusClient = await walrusServer.getWalrusClient({ suiMaster });
 
-        return { suiMaster, walrusState, walrusServer, walrusClient, packageId };
+        // Deploy Seal mock — lets sealed-vector tests share the same validator/walrus stack.
+        // Cheap if unused; sealed tests pick it up via `await sealState.getSealClient(...)`.
+        const sealState = new LocalnodeSealTestState({ suiMaster });
+        await sealState.deploy({ name: 'ev-seal', url: walrusServer.url });
+        walrusServer.seal = sealState;
+        const sealClient = await walrusServer.getSealClient({ suiMaster });
+
+        return { suiMaster, walrusState, walrusServer, walrusClient, sealState, sealClient, packageId };
     })().catch((err) => {
         cached = null;
         throw err;

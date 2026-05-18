@@ -114,7 +114,7 @@ export default class EndlessVectorWalrus {
      * @param {number} [params.epochs=3] - Walrus storage epochs
      * @param {boolean} [params.deletable=false]
      * @param {number} [params.timeout=30000]
-     * @param {number} [params.pollIntervalMs=1000]
+     * @param {number} [params.pollIntervalMs=200]
      * @returns {Promise<{ blobId: string, blobObjectId: string }>}
      * @throws {Error} If parent vector is not writable or no Walrus write transport configured
      */
@@ -124,12 +124,12 @@ export default class EndlessVectorWalrus {
             throw new Error('EndlessVector is not writable, packageId and signAndExecuteTransaction are required');
         }
 
-        const { epochs = 3, deletable = false, timeout = 30000, pollIntervalMs = 1000 } = params;
+        const { epochs = 3, deletable = false, timeout = 30000, pollIntervalMs = 200 } = params;
 
         let blobId, blobObjectId;
 
         if (this._walrusClient) {
-            ({ blobId, blobObjectId } = await this._writeViaWalrusClient(data, { epochs, deletable }));
+            ({ blobId, blobObjectId } = await this._writeViaWalrusClient(data, { epochs, deletable, timeout, pollIntervalMs }));
         } else if (this._publisherUrl) {
             ({ blobId, blobObjectId } = await this._writeViaPublisherUrl(data, { epochs }));
         } else {
@@ -137,18 +137,7 @@ export default class EndlessVectorWalrus {
         }
 
         const tx = this.getPushBlobTransaction(blobObjectId);
-        const digest = await ev._signAndExecuteTransaction(tx);
-
-        const txResult = await ev.suiClient.waitForTransaction({
-            digest,
-            include: { effects: true },
-            timeout,
-            pollInterval: pollIntervalMs,
-        });
-        const txData = txResult.Transaction ?? txResult.FailedTransaction;
-        if (!txData?.status?.success) {
-            throw new Error('push_back_blob transaction failed');
-        }
+        await ev.executeAndWaitForTransaction(tx, { timeout, pollIntervalMs });
 
         ev.reInitialize();
 
@@ -160,7 +149,7 @@ export default class EndlessVectorWalrus {
      * @param {{ epochs: number, deletable: boolean }} options
      * @returns {Promise<{ blobId: string, blobObjectId: string }>}
      */
-    async _writeViaWalrusClient(data, { epochs, deletable }) {
+    async _writeViaWalrusClient(data, { epochs, deletable, timeout = 30000, pollIntervalMs = 200 }) {
         const ev = this._endlessVector;
         const owner = this._senderAddress || ev.suiClient?.address;
 
@@ -174,7 +163,7 @@ export default class EndlessVectorWalrus {
         await flow.upload({ digest: registerDigest });
 
         const certifyTx = flow.certify();
-        await ev._signAndExecuteTransaction(certifyTx);
+        await ev.executeAndWaitForTransaction(certifyTx, { timeout, pollIntervalMs });
 
         const blob = await flow.getBlob();
         return { blobId: blob.blobId, blobObjectId: blob.blobObjectId };

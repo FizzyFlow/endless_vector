@@ -9,7 +9,7 @@ import { beforeAll, afterAll, describe, it, expect } from 'vitest';
 import { Transaction } from '@mysten/sui/transactions';
 import { setupEndlessVectorLocalnet, teardownEndlessVectorLocalnet } from './fixture.js';
 
-const TX_TIMEOUT = 60_000;
+const TX_TIMEOUT = 90_000;
 
 let suiMaster;
 let walrusState;

@@ -29,13 +29,16 @@
         "test:walrus-blobs": "vitest run ./test/walrus_blobs.test.js",
         "test:walrus-blobs-sdk": "vitest run ./test/walrus_blobs_sdk.test.js",
         "test:walrus-blobs-history": "vitest run --config vitest.config.js ./test/walrus_blobs_history.test.js",
-        "test:base": "vitest run ./test/base.test.js"
+        "test:base": "vitest run ./test/base.test.js",
+        "test:seal": "vitest run --config vitest.config.js ./test/seal.test.js"
     },
     "peerDependencies": {
         "@mysten/sui": "^1.45.0"
     },
     "devDependencies": {
+        "@mysten/seal": "^1.1.3",
         "@mysten/sui": "^2.16.0",
+        "@noble/ciphers": "^2.2.0",
         "suidouble": "^2.16.0",
         "tap": "^21.1.0",
         "vitest": "^3.2.0"
