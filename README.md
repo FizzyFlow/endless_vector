@@ -319,7 +319,7 @@ pnpm test:base    # core tests
 pnpm test:seal    # seal encryption tests
 ```
 
-Tests use [vitest](https://vitest.dev/) and require a local Sui validator with Walrus and Seal localnet services.
+Tests use [vitest](https://vitest.dev/) and require [seal_walrus_localnet](https://github.com/FizzyFlow/seal_walrus_localnet) running on a local Sui validator.
 
 ## License
 

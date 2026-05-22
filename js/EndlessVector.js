@@ -117,6 +117,15 @@ export default class EndlessVector {
         this.sealEncryptedKey = null;
     }
 
+    get packageId() {
+        return this._packageId;
+    }
+
+    static getPackageId(network) {
+        const entry = ids[network];
+        return entry ? entry.packageId : null;
+    }
+
     async isEncrypted() {
         await this.initialize();
         return !!this.sealEncryptedKey;

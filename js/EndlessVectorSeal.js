@@ -143,9 +143,8 @@ export default class EndlessVectorSeal {
         });
 
         const senderAddress = this._senderAddress();
-        if (!senderAddress) throw new Error('seal: senderAddress is required to build the seal_approve PTB');
-        tx.setSender(senderAddress);
-        const txBytes = await tx.build({ client: ev.suiClient });
+        if (senderAddress) tx.setSender(senderAddress);
+        const txBytes = await tx.build({ client: ev.suiClient, onlyTransactionKind: true });
 
         const sessionKey = await this._ensureSessionKey();
         const aesKey = await this._sealClient.decrypt({

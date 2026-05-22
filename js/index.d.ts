@@ -278,6 +278,10 @@ declare class EndlessVector {
 
     constructor(params?: EndlessVectorConstructorParams);
 
+    get packageId(): string | null;
+
+    static getPackageId(network: string): string | null;
+
     isEncrypted(): Promise<boolean>;
 
     static create(params: EndlessVectorCreateParams): Promise<EndlessVector>;
