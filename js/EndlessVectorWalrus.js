@@ -67,15 +67,32 @@ export default class EndlessVectorWalrus {
      * @returns {string}
      */
     static _encodeBlobId(value) {
-        if (!/^\d+$/.test(String(value))) return value;
-        let n = BigInt(value);
-        const bytes = new Uint8Array(32);
-        for (let i = 0; i < 32; i++) {
-            bytes[i] = Number(n & 0xffn);
-            n >>= 8n;
+        let bytes;
+        if (value instanceof Uint8Array) {
+            bytes = value;
+        } else if (Array.isArray(value)) {
+            bytes = new Uint8Array(value);
+        } else if (/^\d+$/.test(String(value))) {
+            let n = BigInt(value);
+            bytes = new Uint8Array(32);
+            for (let i = 0; i < 32; i++) {
+                bytes[i] = Number(n & 0xffn);
+                n >>= 8n;
+            }
+        } else {
+            return value;
         }
-        const b64 = Buffer.from(bytes).toString('base64');
-        return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        let b64 = '';
+        for (let i = 0; i < bytes.length; i += 3) {
+            const a = bytes[i], b = bytes[i + 1] || 0, c = bytes[i + 2] || 0;
+            const triplet = (a << 16) | (b << 8) | c;
+            const chars = i + 2 < bytes.length ? 4 : (i + 1 < bytes.length ? 3 : 2);
+            const encoded = [
+                triplet >> 18 & 63, triplet >> 12 & 63, triplet >> 6 & 63, triplet & 63
+            ].slice(0, chars).map(v => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'[v]).join('');
+            b64 += encoded;
+        }
+        return b64;
     }
 
     /**
@@ -157,8 +174,10 @@ export default class EndlessVectorWalrus {
         await flow.encode();
 
         const registerTx = flow.register({ epochs, owner, deletable });
-        const registerDigest = await ev._signAndExecuteTransaction(registerTx);
+        const registerResult = await ev._signAndExecuteTransaction(registerTx);
+        const registerDigest = typeof registerResult === 'string' ? registerResult : registerResult?.digest;
         if (!registerDigest) throw new Error('Walrus register transaction returned no digest');
+        console.log('[EndlessVectorWalrus] register digest:', registerDigest);
 
         await flow.upload({ digest: registerDigest });
 

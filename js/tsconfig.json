@@ -1,0 +1,13 @@
+{
+    "compilerOptions": {
+        "moduleResolution": "bundler",
+        "module": "ESNext",
+        "target": "ESNext",
+        "noEmit": true,
+        "allowJs": true,
+        "checkJs": false,
+        "strict": false,
+        "skipLibCheck": true
+    },
+    "include": ["index.d.ts"]
+}

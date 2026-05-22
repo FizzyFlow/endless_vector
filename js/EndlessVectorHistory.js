@@ -16,7 +16,7 @@ export default class EndlessVectorHistory {
     /**
      * Creates a new EndlessVectorHistory instance.
      * @param {Object} params - Configuration parameters
-     * @param {SuiClient} [params.suiClient] - Sui client instance for blockchain interactions
+     * @param {SuiGrpcClient} [params.suiClient] - Sui gRPC client instance for blockchain interactions
      * @param {string} [params.id] - Unique identifier for this history item
      * @param {number} [params.index=0] - Index position of this history item in the sequence
      * @param {?Object} [params.fields] - Raw field data from the blockchain object
@@ -24,7 +24,7 @@ export default class EndlessVectorHistory {
      * @param {?EndlessVectorArchive} [params.endlessVectorArchive] - Reference to the parent EndlessVectorArchive instance
      */
     constructor(params = {}) {
-        /** @type {SuiClient} */
+        /** @type {SuiGrpcClient} */
         this.suiClient = params.suiClient;
         /** @type {string} */
         this.id = params.id;

@@ -260,6 +260,43 @@ describe('sealed re-reading by id', () => {
 
 // ─── concat refused ──────────────────────────────────────────────────────────
 
+describe('unsealed vector with sealClient passed', () => {
+    it('works normally when sealClient is provided but vector is not encrypted', async () => {
+        const ev = await makeUnsealedEV();
+        const data = randomBytesOfLength(1024);
+        await ev.push(data);
+
+        // Open a fresh instance with sealClient — should still read plaintext fine.
+        const fresh = new EndlessVector({
+            suiClient: suiMaster.client,
+            id: ev.id,
+            packageId,
+            walrusClient,
+            aggregatorUrl: walrusServer?.url,
+            senderAddress: suiMaster.address,
+            signAndExecuteTransaction: makeSignAndExecute(),
+            sealClient,
+            signer: suiMaster._signer ?? suiMaster._keypair,
+        });
+
+        await fresh.initialize();
+        expect(fresh.sealEncryptedKey).toBeNull();
+        expect(await fresh.isEncrypted()).toBe(false);
+        expect(fresh.length).toBe(1);
+        expect(equalUint8Arrays(await fresh.at(0), data)).toBe(true);
+    }, TX_TIMEOUT);
+
+    it('isEncrypted returns true for sealed vectors and false for unsealed', async () => {
+        const sealed = await makeSealedEV();
+        expect(await sealed.isEncrypted()).toBe(true);
+
+        const unsealed = await makeUnsealedEV();
+        expect(await unsealed.isEncrypted()).toBe(false);
+    }, TX_TIMEOUT);
+});
+
+// ─── concat refused ──────────────────────────────────────────────────────────
+
 describe('sealed concat is refused', () => {
     it('throws at the SDK layer when source is sealed', async () => {
         const dst = await makeUnsealedEV();

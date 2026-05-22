@@ -44,6 +44,18 @@ export default class EndlessVectorItem {
     get isEmpty() { return this.type === 'empty'; }
 
     /**
+     * Returns the binary size of this item in bytes.
+     * For bytes items, returns the byte array length.
+     * For blob items, returns the size from on-chain Blob object data.
+     * @returns {number}
+     */
+    get size() {
+        if (this.type === 'bytes') return this._bytes?.length || 0;
+        if (this.type === 'blob') return parseInt(this._blobData?.size || 0);
+        return 0;
+    }
+
+    /**
      * Returns the raw bytes payload.
      * @returns {Uint8Array}
      * @throws {Error} If the item is a blob (not yet supported) or empty

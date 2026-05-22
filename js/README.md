@@ -1,6 +1,6 @@
 # Endless Vector - JavaScript SDK
 
-JavaScript/TypeScript SDK for interacting with the Endless Vector smart contract on the Sui blockchain. Endless Vector provides a scalable, on-chain data structure storing `vector<vector<u8>>` that can grow beyond Sui object size limits.
+JavaScript/TypeScript SDK for the Endless Vector smart contract on [Sui](https://sui.io). Endless Vector is a scalable, append-only on-chain `vector<vector<u8>>` that grows beyond Sui object size limits by automatically splitting data into history segments. Items larger than ~120 KB are transparently stored as [Walrus](https://walrus.xyz) blobs. Optional [Seal](https://github.com/nicola/seal) encryption protects all stored data with AES-256-GCM.
 
 ## Installation
 
@@ -10,343 +10,303 @@ npm install @fizzyflow/endless-vector
 
 ## Quick Start
 
-### Creating a New Vector
-
 ```javascript
-import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { EndlessVector } from '@fizzyflow/endless-vector';
 
-const client = new SuiGrpcClient({ url: 'https://fullnode.mainnet.sui.io:443' });
-
-// Create an empty vector
-const vector = await EndlessVector.create({
+// Create
+const ev = await EndlessVector.create({
     suiClient: client,
-    packageId: 'testnet',  // or 'mainnet' or '0xYOUR_PACKAGE_ID'
+    packageId: 'testnet', // or 'mainnet', or an explicit 0x... package ID
     signAndExecuteTransaction: async (tx) => {
         const result = await wallet.signAndExecuteTransaction({ transaction: tx });
         return result.digest;
-    }
-});
-
-// Or create with initial data
-const vectorWithData = await EndlessVector.create({
-    suiClient: client,
-    packageId: 'testnet',  // or 'mainnet' or '0xYOUR_PACKAGE_ID'
-    array: new Uint8Array([1, 2, 3]),  // single item
-    //array: [new Uint8Array([1, 2, 3]), new Uint8Array([5, 6, 7])],  // or multiple items
-    signAndExecuteTransaction: async (tx) => {
-        const result = await wallet.signAndExecuteTransaction({ transaction: tx });
-        return result.digest;
-    }
-});
-```
-
-### Reading an Existing Vector
-
-```javascript
-const vector = new EndlessVector({
-    suiClient: client,
-    id: '0xYOUR_VECTOR_OBJECT_ID'
-});
-
-await vector.initialize();
-
-console.log('Total items:', vector.length);
-console.log('Total size:', vector.binaryLength, 'bytes');
-
-// Read items
-const firstItem = await vector.at(0); // Uint8Array
-```
-
-## API Reference
-
-### Static Methods
-
-#### EndlessVector.create(params)
-
-Creates a new EndlessVector on the blockchain.
-
-**Parameters:**
-- `suiClient` (SuiGrpcClient) - Sui gRPC client instance for blockchain interactions
-- `packageId` (string) - 'testnet', 'mainnet', or ID of the Move package containing the EndlessVector module
-- `signAndExecuteTransaction` (function) - Function to sign and execute transactions, must return the transaction digest
-- `array` (Uint8Array or Uint8Array[], optional) - Optional first vector<u8>(s) to push to the new vector
-- `gasCoin` (Object, optional) - Gas coin object reference `{objectId: string, digest: string, version: string}` for transaction payment
-- `options` (Object, optional) - Additional options:
-  - `timeout` (number) - Transaction confirmation timeout in ms (default: 30000)
-  - `pollIntervalMs` (number) - Poll interval in ms (default: 1000)
-
-**Returns:** Promise\<EndlessVector\>
-
-**Example:**
-```javascript
-const vector = await EndlessVector.create({
-    suiClient: client,
-    packageId: 'testnet',  // or 'mainnet' or '0xPACKAGE_ID'
-    array: new Uint8Array([1, 2, 3]),
-    gasCoin: {
-        objectId: '0xGAS_COIN_ID',
-        digest: 'DIGEST',
-        version: 'VERSION'
     },
-    signAndExecuteTransaction: async (tx) => {
-        const result = await wallet.signAndExecuteTransaction({ transaction: tx });
-        return result.digest;
-    }
 });
+
+// Write
+await ev.push(new Uint8Array([1, 2, 3]));
+
+// Read
+const item = await ev.at(0); // Uint8Array
 ```
 
-### Constructor
+## Constructor
 
 ```javascript
-const vector = new EndlessVector({
-    suiClient,                 // SuiGrpcClient instance (required for reading)
-    id,                        // Object ID of the EndlessVector (required)
-    packageId,                 // 'testnet', 'mainnet', or Package ID for write operations (optional)
-    signAndExecuteTransaction  // Function to sign/execute transactions, must return digest (optional)
+const ev = new EndlessVector(params);
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `suiClient` | SuiGrpcClient | yes | Sui gRPC client instance |
+| `id` | string | yes | On-chain object ID of the vector |
+| `packageId` | string | no | Move package ID, or `'testnet'`/`'mainnet'`. Enables writes |
+| `signAndExecuteTransaction` | function | no | Signs and submits a Transaction, returns its digest. Enables writes |
+| `walrusClient` | WalrusClient | no | `@mysten/walrus` client for blob read/write |
+| `publisherUrl` | string | no | Walrus publisher HTTP URL (fallback when no `walrusClient`) |
+| `aggregatorUrl` | string | no | Walrus aggregator HTTP URL (fallback when no `walrusClient`) |
+| `senderAddress` | string | no | Sender Sui address, required for Walrus blob writes |
+| `sealClient` | SealClient | no | `@mysten/seal` client for encryption/decryption |
+| `sessionKey` | SessionKey | no | Pre-built Seal SessionKey. Alternative to `signer` |
+| `signer` | Signer | no | Keypair or wallet signer used to auto-create a SessionKey when needed |
+| `sealTtlMin` | number | no | SessionKey TTL in minutes (default: 5) |
+
+Providing only `suiClient` + `id` gives a **read-only** instance. Add `packageId` + `signAndExecuteTransaction` for **writes**. Add Walrus params for **large items** (>120 KB). Add Seal params for **encryption**.
+
+## EndlessVector.create(params)
+
+Creates a new on-chain vector.
+
+Accepts all constructor params above, plus:
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `array` | Uint8Array \| Uint8Array[] | no | Initial item(s) to push |
+| `gasCoin` | `{objectId, digest, version}` | no | Explicit gas coin for parallel creation |
+| `options.timeout` | number | no | Tx confirmation timeout, ms (default: 30000) |
+| `options.pollIntervalMs` | number | no | Tx poll interval, ms (default: 1000) |
+
+When `sealClient` is provided, the vector is created with Seal encryption enabled. A random AES-256-GCM key is generated, Seal-wrapped scoped to the new vector's object ID, and stored on-chain. Any initial `array` items are encrypted before storage.
+
+```javascript
+const ev = await EndlessVector.create({
+    suiClient: client,
+    packageId: 'testnet',
+    sealClient,
+    signer: keypair,
+    signAndExecuteTransaction: sign,
 });
+// All push() / at() calls now encrypt/decrypt transparently
 ```
 
-**Modes:**
-- **Read-only mode**: Provide only `suiClient` and `id`
-- **Writable mode**: Provide all parameters including `packageId` and `signAndExecuteTransaction`
+## Properties
 
-### Properties
+| Property | Type | Description |
+|----------|------|-------------|
+| `id` | string | Object ID |
+| `isWritable` | boolean | Whether writes are enabled |
+| `length` | number | Total item count (append-only, never decreases) |
+| `binaryLength` | number | Total size of all items in bytes |
+| `sealEncryptedKey` | Uint8Array \| null | Seal-wrapped AES key, or null if unencrypted |
+| `seal` | EndlessVectorSeal | Seal companion (always present; active only when `sealClient` was provided) |
+| `walrus` | EndlessVectorWalrus | Walrus companion (always present; active only when Walrus params were provided) |
+| `historyItemsCount` | number | History segments in the current object |
+| `archiveItemsCount` | number | Total archive entries ever created |
+| `archivedAtLength` | number | `length` at the time of the last archive |
+| `archivedFromLength` | number | Items before this index have been burned |
+| `burnedArchiveCount` | number | Burned archive count |
+| `firstNotHistoryIndex` | number | First index stored in the current object |
 
-- `id` (string) - Object ID of the EndlessVector
-- `isWritable` (boolean) - Whether the instance can perform write operations
-- `length` (number) - Total number of items in the vector (never decreases, even after burns)
-- `binaryLength` (number) - Total binary size of all items in bytes
-- `historyItemsCount` (number) - Number of history segments in the current object
-- `archiveItemsCount` (number) - Total number of archive entries ever created
-- `archivedAtLength` (number) - `length` value at the time of the last archive operation
-- `archivedFromLength` (number) - Items before this index have been burned and are no longer readable
-- `burnedArchiveCount` (number) - Number of archive entries that have been burned
-- `firstNotHistoryIndex` (number) - First index stored in the current object (not in history or archive)
+## Methods
 
-### Methods
+### initialize()
 
-#### initialize()
-
-Loads the vector's metadata from the blockchain. Called automatically by most methods.
+Loads metadata from chain. Most read methods call this internally.
 
 ```javascript
-await vector.initialize();
+await ev.initialize();
 ```
 
-#### reInitialize()
+### reInitialize()
 
-Forces a reload of the vector's metadata on the next access, clearing the items cache.
+Marks the instance stale so the next operation re-fetches from chain.
 
 ```javascript
-vector.reInitialize();
-await vector.initialize();
+ev.reInitialize();
 ```
 
-#### push(arr, params)
+### isEncrypted()
 
-Pushes a `Uint8Array` (or array of `Uint8Array`) to the vector. Requires writable mode. Maximum size per item: ~120KB.
+Async. Returns `true` if the vector has a Seal encryption key on-chain. Calls `initialize()` internally.
 
 ```javascript
-await vector.push(new Uint8Array([1, 2, 3, 4, 5]));
+if (await ev.isEncrypted()) { /* ... */ }
 ```
 
-**Parameters:**
-- `arr` (Uint8Array or Uint8Array[]) - Data to push
-- `params` (Object, optional) - `{ timeout, pollIntervalMs }`
+### push(arr, params?)
 
-**Returns:** Promise\<boolean\>
+Appends one or more `Uint8Array` items. Requires writable mode.
 
-#### getPushTransaction(arr, tx)
-
-Creates a transaction for pushing data without executing it. Useful for batching multiple pushes in one transaction.
+- Items up to ~120 KB are stored on-chain as `vector<u8>`.
+- Larger items are stored as Walrus blobs (requires Walrus params).
+- On encrypted vectors, every item is AES-256-GCM encrypted before storage (28 bytes overhead per item).
 
 ```javascript
-// Single push transaction
-const tx = vector.getPushTransaction(new Uint8Array([1, 2, 3]));
-await signAndExecuteTransaction(tx);
+await ev.push(new Uint8Array([1, 2, 3]));
+await ev.push([chunk1, chunk2, chunk3]); // multiple items
+```
 
-// Multiple pushes in one transaction
+### getPushTransaction(arr, tx?)
+
+Returns a `Transaction` without executing it. Useful for batching multiple pushes.
+
+```javascript
 const tx = new Transaction();
-vector.getPushTransaction(new Uint8Array([1, 2, 3]), tx);
-vector.getPushTransaction(new Uint8Array([4, 5, 6]), tx);
+ev.getPushTransaction(data1, tx);
+ev.getPushTransaction(data2, tx);
 await signAndExecuteTransaction(tx);
 ```
 
-**Parameters:**
-- `arr` (Uint8Array or Uint8Array[]) - Data to push
-- `tx` (Transaction, optional) - Existing transaction to append to
+### at(index)
 
-**Returns:** Transaction
-
-#### at(index)
-
-Retrieves an item at a specific index. Throws if the index is out of range or has been burned.
+Reads the item at a zero-based index. On encrypted vectors, decrypts transparently.
 
 ```javascript
-const item = await vector.at(42);  // Returns Uint8Array
+const data = await ev.at(0); // Uint8Array
 ```
 
-**Parameters:**
-- `index` (number) - Zero-based index
+### concat(other, params?)
 
-**Returns:** Promise\<Uint8Array\>
-
-#### concat(other, params)
-
-Concatenates another EndlessVector (or array of vectors) into this one. The other vector(s) are consumed (destroyed).
+Appends all items from another vector (or array of vectors) into this one. Sources are consumed (destroyed).
 
 ```javascript
-// Concat single vector
-await vector1.concat(vector2);
-
-// Concat multiple vectors at once
-await vector1.concat([vector2, vector3, vector4]);
-
-// Also accepts object IDs
-await vector1.concat('0xVECTOR2_ID');
-await vector1.concat(['0xVECTOR2_ID', '0xVECTOR3_ID']);
+await ev.concat(otherVector);
+await ev.concat([v2, v3]);
+await ev.concat('0xOTHER_VECTOR_ID');
 ```
 
-**Parameters:**
-- `other` (string | EndlessVector | Array\<string | EndlessVector\>) - Vector(s) to concatenate
-- `params` (Object, optional) - `{ timeout, pollIntervalMs }`
+**Restrictions:** cannot concat vectors that have archived items or that are Seal-encrypted.
 
-**Returns:** Promise\<boolean\>
+### getConcatTransaction(other, tx?)
 
-**Note:** Cannot concat a source vector that has archived items (`archiveItemsCount > 0`).
+Returns a concat `Transaction` without executing.
 
-#### getConcatTransaction(other, tx)
+### archive(params?)
 
-Creates a transaction for concatenation without executing it.
+Sweeps current history segments into a new archive entry, freeing capacity for future pushes.
 
 ```javascript
-const tx = vector1.getConcatTransaction(vector2);
-await signAndExecuteTransaction(tx);
-
-// Or append to existing transaction
-const tx = new Transaction();
-vector1.getConcatTransaction([vector2, vector3], tx);
-await signAndExecuteTransaction(tx);
+await ev.archive();
 ```
 
-**Parameters:**
-- `other` (string | EndlessVector | Array\<string | EndlessVector\>) - Vector(s) to concatenate
-- `tx` (Transaction, optional) - Existing transaction to append to
+### getArchiveTransaction(tx?)
 
-**Returns:** Transaction
+Returns an archive `Transaction` without executing.
 
-#### archive(params)
+### burnArchive(params?)
 
-Moves the current history segments into a new archive entry, freeing up history capacity for future pushes. Internally calls `clamp()` first, so any items currently in the object are also swept into the archive.
+Permanently deletes the oldest archive entry. Items in the burned range become unreadable.
 
 ```javascript
-await vector.archive();
+await ev.burnArchive();
+// ev.archivedFromLength now advanced; at() throws for burned indices
 ```
 
-**Parameters:**
-- `params` (Object, optional) - `{ timeout, pollIntervalMs }`
+### getBurnArchiveTransaction(tx?)
 
-**Returns:** Promise\<boolean\>
+Returns a burn-archive `Transaction` without executing.
 
-#### getArchiveTransaction(tx)
+## Walrus Blob Storage
 
-Creates an archive transaction without executing it.
+When Walrus params are configured, items larger than ~120 KB are automatically stored as Walrus blobs instead of on-chain `vector<u8>`. The SDK handles upload, certification, and read-back. On encrypted vectors, blobs contain ciphertext only.
 
 ```javascript
-const tx = vector.getArchiveTransaction();
-await signAndExecuteTransaction(tx);
+const ev = new EndlessVector({
+    suiClient: client,
+    id: '0x...',
+    packageId: 'testnet',
+    walrusClient,                       // or aggregatorUrl + publisherUrl
+    senderAddress: wallet.address,
+    signAndExecuteTransaction: sign,
+});
+
+await ev.push(largeFile); // >120 KB → stored as Walrus blob
+const data = await ev.at(0); // fetched from Walrus transparently
 ```
 
-**Parameters:**
-- `tx` (Transaction, optional) - Existing transaction to append to
+## Seal Encryption
 
-**Returns:** Transaction
+Seal provides end-to-end encryption for vector items. The access policy (`seal_approve_endless_vector_owner`) ensures only the vector owner can decrypt.
 
-#### burnArchive(params)
-
-Permanently deletes the oldest archive entry. Items covered by the burned archive become unreadable — `at()` will throw for those indices. `archivedFromLength` advances by the number of items in the burned archive.
+### Creating an encrypted vector
 
 ```javascript
-await vector.burnArchive();
-// items before vector.archivedFromLength are now gone
+const ev = await EndlessVector.create({
+    suiClient: client,
+    packageId: 'testnet',
+    sealClient,
+    signer: keypair,
+    signAndExecuteTransaction: sign,
+});
+// AES key generated → Seal-wrapped → stored on-chain
+// All push()/at() calls encrypt/decrypt transparently
 ```
 
-**Parameters:**
-- `params` (Object, optional) - `{ timeout, pollIntervalMs }`
+### Reading an encrypted vector
 
-**Returns:** Promise\<boolean\>
-
-#### getBurnArchiveTransaction(tx)
-
-Creates a burn-archive transaction without executing it.
+You can provide a `signer` and the SDK auto-creates a SessionKey:
 
 ```javascript
-const tx = vector.getBurnArchiveTransaction();
-await signAndExecuteTransaction(tx);
+const ev = new EndlessVector({
+    suiClient: client,
+    id: '0x...',
+    sealClient,
+    signer: keypair,          // SDK creates a 5-minute SessionKey automatically
+});
+const data = await ev.at(0); // decrypted
 ```
 
-**Parameters:**
-- `tx` (Transaction, optional) - Existing transaction to append to
+Or provide a pre-built `sessionKey` (useful in browser wallets where signing is interactive):
 
-**Returns:** Transaction
+```javascript
+const ev = new EndlessVector({
+    suiClient: client,
+    id: '0x...',
+    sealClient,
+    sessionKey: mySessionKey, // created externally, e.g. via wallet adapter
+});
+const data = await ev.at(0); // decrypted using the provided SessionKey
+```
 
-## Usage Examples
+You can also set the session key after construction:
+
+```javascript
+ev.seal._sessionKey = mySessionKey;
+```
+
+### How it works
+
+1. `create()` generates a random AES-256-GCM key
+2. The key is Seal-wrapped scoped to the vector's object ID and stored on-chain as `seal_encrypted_key`
+3. `push()` encrypts each item before storage (adds 28 bytes: 12B nonce + 16B GCM tag)
+4. `at()` unwraps the AES key via Seal (requires a valid SessionKey), then decrypts the item
+5. The unwrapped AES key is cached in memory for subsequent reads
+
+Passing `sealClient` to an unencrypted vector is safe — `push()` and `at()` check for the on-chain `sealEncryptedKey` before attempting any encryption/decryption.
+
+## Examples
 
 ### Archive and burn lifecycle
 
 ```javascript
-// Push enough data to fill history, then archive
-await vector.push(largeData);       // triggers clamp() → items move to history
-await vector.archive();             // history → archive entry #0
-await vector.initialize();
+await ev.push(largeData);
+await ev.archive();
+await ev.initialize();
 
-console.log(vector.archiveItemsCount);  // 1
-console.log(vector.archivedAtLength);   // e.g. 5  (length at archive time)
-console.log(vector.historyItemsCount);  // 0  (cleared)
+console.log(ev.archiveItemsCount);  // 1
+console.log(ev.archivedAtLength);   // e.g. 5
 
-// All items still readable, including archived ones
-const item = await vector.at(0);
+const item = await ev.at(0); // still readable
 
-// When old data is no longer needed, burn the archive to reclaim storage
-await vector.burnArchive();
-await vector.initialize();
+await ev.burnArchive();
+await ev.initialize();
 
-console.log(vector.burnedArchiveCount);  // 1
-console.log(vector.archivedFromLength);  // e.g. 5  (items 0-4 are gone)
-
-// at(0) now throws — burned
-await vector.at(0);  // Error: this part of archive has been burned
+console.log(ev.burnedArchiveCount);  // 1
+console.log(ev.archivedFromLength);  // 5 — items 0..4 are gone
+await ev.at(0); // throws
 ```
 
-### Custom Gas Coin for Parallel Operations
-
-To execute transactions in parallel you need a separate gas coin per transaction:
+### Parallel vector creation with gas coins
 
 ```javascript
-// Get available gas coins
-const { objects: coins } = await client.listCoins({
-    owner: address,
-    coinType: '0x2::sui::SUI'
-});
-const gasCoinRefs = coins.map(c => ({
-    objectId: c.objectId,
-    digest: c.digest,
-    version: c.version
-}));
-
-// Create vectors in parallel, each with its own gas coin
 const vectors = await Promise.all(
-    dataChunks.map((items, i) =>
+    dataChunks.map((chunk, i) =>
         EndlessVector.create({
             suiClient: client,
-            packageId: 'testnet',  // or 'mainnet' or '0xPACKAGE_ID'
-            array: items,
+            packageId: 'testnet',
+            array: chunk,
             gasCoin: gasCoinRefs[i],
-            signAndExecuteTransaction: async (tx) => {
-                const result = await wallet.signAndExecuteTransaction({ transaction: tx });
-                return result.digest;
-            }
+            signAndExecuteTransaction: sign,
         })
     )
 );
@@ -355,35 +315,18 @@ const vectors = await Promise.all(
 ## Testing
 
 ```bash
-pnpm test:base
+pnpm test:base    # core tests
+pnpm test:seal    # seal encryption tests
 ```
 
-Tests use [vitest](https://vitest.dev/) and require a local Sui validator with a Walrus localnet.
-
-### Performance Considerations
-
-- **Caching**: Loaded history and archive segments are cached per instance
-- **Lazy Loading**: History/archive data is only fetched when accessed via `at()`
-- **Batch Writes**: Use `getPushTransaction()` to combine multiple pushes in one transaction
-- **Re-initialization**: After any write operation, metadata is refreshed on next read automatically
-
-### Concatenation
-
-The `concat()` method efficiently merges vectors by transferring ownership of internal data structures rather than copying items one by one.
-
-**Restrictions:**
-- Cannot concatenate a source vector that has archived items (`archiveItemsCount > 0`)
-- The source vector(s) are consumed (destroyed) in the process
-- All items from the source vector(s) are appended in order
+Tests use [vitest](https://vitest.dev/) and require a local Sui validator with Walrus and Seal localnet services.
 
 ## License
 
 Apache-2.0
 
-## Repository
+## Links
 
-https://github.com/fizzyFlow/endless_vector
-
-## Author
-
-[suidouble](https://github.com/suidouble)
+- [Repository](https://github.com/fizzyFlow/endless_vector)
+- [npm](https://www.npmjs.com/package/@fizzyflow/endless-vector)
+- [Author](https://github.com/suidouble)

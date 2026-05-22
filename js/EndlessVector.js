@@ -37,9 +37,14 @@ export default class EndlessVector {
      * @param {?import('@mysten/walrus').WalrusClient} [params.walrusClient] - Walrus client for blob reads and writes (preferred)
      * @param {?string} [params.publisherUrl] - Walrus publisher HTTP URL for blob uploads (fallback if no walrusClient)
      * @param {?string} [params.aggregatorUrl] - Walrus aggregator HTTP URL for blob reads (fallback if no walrusClient)
+     * @param {?string} [params.senderAddress] - Sui address of the transaction sender, required for Walrus blob writes
+     * @param {?import('@mysten/seal').SealClient} [params.sealClient] - SealClient for Seal encryption/decryption
+     * @param {?import('@mysten/seal').SessionKey} [params.sessionKey] - Pre-built SessionKey for Seal operations
+     * @param {?any} [params.signer] - Keypair/signer to mint a SessionKey when needed
+     * @param {?number} [params.sealTtlMin=5] - SessionKey TTL in minutes (default: 5)
      */
     constructor(params = {}) {
-        /** @type {SuiClient} */
+        /** @type {SuiGrpcClient} */
         this.suiClient = params.suiClient;
         /** @type {string} */
         this.id = params.id;
@@ -112,12 +117,17 @@ export default class EndlessVector {
         this.sealEncryptedKey = null;
     }
 
+    async isEncrypted() {
+        await this.initialize();
+        return !!this.sealEncryptedKey;
+    }
+
     /**
      * Static factory method to create a new empty EndlessVector on the blockchain.
      * Creates a new EndlessVector object via the Move contract and returns a wrapped instance.
      *
      * @param {Object} params - Configuration parameters
-     * @param {SuiClient} params.suiClient - Sui client instance for blockchain interactions
+     * @param {SuiGrpcClient} params.suiClient - Sui gRPC client instance for blockchain interactions
      * @param {string} params.packageId - ID of the Move package containing the EndlessVector module
      * @param {CustomSignAndExecuteTransactionFunction} params.signAndExecuteTransaction - Function to sign and execute transactions
      * @param {?Uint8Array|Uint8Array[]} [params.array] - Optional Uint8Array to initialize the vector with as the first item to get with .at(0)
@@ -482,7 +492,7 @@ export default class EndlessVector {
         // When the vector is sealed, transparently encrypt every item before it goes on-chain.
         // Encryption adds 28 bytes (12B nonce + 16B tag), so it can shift items across the
         // 120 KB walrus threshold — encrypt first, then route.
-        if (this.seal?.isEnabled) {
+        if (this.sealEncryptedKey && this.seal?.isEnabled) {
             if (arr instanceof Uint8Array) {
                 arr = await this.seal.encryptItem(arr);
             } else if (Array.isArray(arr)) {
@@ -1108,7 +1118,7 @@ export default class EndlessVector {
      */
     async at(i) {
         const raw = await this._atRaw(i);
-        if (this.seal?.isEnabled || this.sealEncryptedKey) {
+        if (this.sealEncryptedKey) {
             return await this.seal.decryptItem(raw);
         }
         return raw;

@@ -1,5 +1,6 @@
-import type { SuiClient, GetObjectParams, GetDynamicFieldsParams } from '@mysten/sui/client';
+import type { SuiGrpcClient } from '@mysten/sui/grpc';
 import type { Transaction, TransactionResult, TransactionObjectArgument } from '@mysten/sui/transactions';
+import type { Signer } from '@mysten/sui/cryptography';
 
 /**
  * Custom function to sign and execute transactions
@@ -10,22 +11,38 @@ export type CustomSignAndExecuteTransactionFunction = (tx: Transaction) => Promi
  * Configuration parameters for creating an EndlessVector instance
  */
 export interface EndlessVectorConstructorParams {
-    /** Sui client instance for blockchain interactions */
-    suiClient?: SuiClient;
+    /** Sui gRPC client instance for blockchain interactions */
+    suiClient?: SuiGrpcClient;
     /** ID or address of the EndlessVector on the Sui blockchain */
     id?: string;
     /** Adds write capability if provided, ID of the Move package containing the EndlessVector module or 'mainnet', 'testnet' to use known IDs */
     packageId?: string | null;
     /** Adds write capability if provided, function should accept Sui transaction, sign and submit it to the blockchain and return its digest */
     signAndExecuteTransaction?: CustomSignAndExecuteTransactionFunction | null;
+    /** Walrus SDK client for blob reads and writes */
+    walrusClient?: any | null;
+    /** Walrus publisher HTTP URL for blob uploads (fallback if no walrusClient) */
+    publisherUrl?: string | null;
+    /** Walrus aggregator HTTP URL for blob reads (fallback if no walrusClient) */
+    aggregatorUrl?: string | null;
+    /** Sui address of the transaction sender, required for Walrus blob writes */
+    senderAddress?: string | null;
+    /** SealClient for Seal encryption/decryption */
+    sealClient?: any | null;
+    /** Pre-built SessionKey for Seal operations */
+    sessionKey?: any | null;
+    /** Keypair or signer to mint a SessionKey when needed */
+    signer?: Signer | null;
+    /** SessionKey TTL in minutes (default: 5) */
+    sealTtlMin?: number;
 }
 
 /**
  * Configuration parameters for creating a new EndlessVector via static create method
  */
 export interface EndlessVectorCreateParams {
-    /** Sui client instance for blockchain interactions */
-    suiClient: SuiClient;
+    /** Sui gRPC client instance for blockchain interactions */
+    suiClient: SuiGrpcClient;
     /** ID of the Move package containing the EndlessVector module */
     packageId: string;
     /** Function to sign and execute transactions */
@@ -41,6 +58,20 @@ export interface EndlessVectorCreateParams {
         /** Poll interval in ms, default 1000 */
         pollIntervalMs?: number;
     };
+    /** Walrus SDK client for blob reads and writes */
+    walrusClient?: any | null;
+    /** Walrus aggregator HTTP URL for blob reads (fallback if no walrusClient) */
+    aggregatorUrl?: string | null;
+    /** Sui address of the transaction sender, required for Walrus blob writes */
+    senderAddress?: string | null;
+    /** SealClient — when provided, the vector is created with Seal encryption */
+    sealClient?: any | null;
+    /** Pre-built SessionKey for Seal operations */
+    sessionKey?: any | null;
+    /** Keypair or signer to mint a SessionKey when needed */
+    signer?: Signer | null;
+    /** SessionKey TTL in minutes (default: 5) */
+    sealTtlMin?: number;
 }
 
 /**
@@ -65,8 +96,8 @@ export interface TransactionOptions {
  * Configuration parameters for creating an EndlessVectorHistory instance
  */
 export interface EndlessVectorHistoryConstructorParams {
-    /** Sui client instance for blockchain interactions */
-    suiClient?: SuiClient;
+    /** Sui gRPC client instance for blockchain interactions */
+    suiClient?: SuiGrpcClient;
     /** Unique identifier for this history item */
     id?: string;
     /** Index position of this history item in the sequence */
@@ -83,8 +114,8 @@ export interface EndlessVectorHistoryConstructorParams {
  * Configuration parameters for creating an EndlessVectorArchive instance
  */
 export interface EndlessVectorArchiveConstructorParams {
-    /** Sui client instance for blockchain interactions */
-    suiClient?: SuiClient;
+    /** Sui gRPC client instance for blockchain interactions */
+    suiClient?: SuiGrpcClient;
     /** ID or address of the EndlessVectorArchive on the Sui blockchain */
     id?: string;
     /** Index position of this archive item in the sequence */
@@ -96,72 +127,114 @@ export interface EndlessVectorArchiveConstructorParams {
 }
 
 /**
- * Represents a history item in an EndlessVector, managing a segment of the vector's data.
- * Each history item stores a portion of the vector's elements and maintains metadata
- * about its position and relationships with adjacent history items.
+ * Represents a single item stored in an EndlessVector.
+ * Items can be bytes (on-chain), blob (Walrus-stored), or empty.
  */
-export declare class EndlessVectorHistory {
-    suiClient: SuiClient;
+declare class EndlessVectorItem {
+    type: 'bytes' | 'blob' | 'empty';
+    meta: Uint8Array;
+
+    constructor(params?: {
+        type?: 'bytes' | 'blob' | 'empty';
+        bytes?: Uint8Array | null;
+        blobData?: any | null;
+        meta?: Uint8Array;
+        endlessVector?: EndlessVector | null;
+        endlessVectorHistory?: EndlessVectorHistory | null;
+    });
+
+    get isBytes(): boolean;
+    get isBlob(): boolean;
+    get isEmpty(): boolean;
+    get size(): number;
+
+    bytes(): Promise<Uint8Array>;
+    blobData(): any | null;
+
+    static fromGrpcJson(raw: any, context?: {
+        endlessVector?: EndlessVector | null;
+        endlessVectorHistory?: EndlessVectorHistory | null;
+    }): EndlessVectorItem;
+
+    static concatBytes(head: EndlessVectorItem, tail: EndlessVectorItem): Uint8Array;
+}
+
+/**
+ * Walrus blob read/write companion for EndlessVector.
+ * Attached as `endlessVector.walrus` on every EndlessVector instance.
+ */
+declare class EndlessVectorWalrus {
+    constructor(params?: {
+        endlessVector?: EndlessVector;
+        walrusClient?: any | null;
+        publisherUrl?: string | null;
+        aggregatorUrl?: string | null;
+        senderAddress?: string | null;
+    });
+
+    readBlobBytes(blobData: any): Promise<Uint8Array>;
+    getPushBlobTransaction(blobObjectId: string, txToAppendTo?: Transaction | null): Transaction;
+    pushBlob(data: Uint8Array, params?: {
+        epochs?: number;
+        deletable?: boolean;
+        timeout?: number;
+        pollIntervalMs?: number;
+    }): Promise<{ blobId: string; blobObjectId: string }>;
+}
+
+/**
+ * Seal encryption companion for EndlessVector.
+ * Attached as `endlessVector.seal` on every EndlessVector instance;
+ * only active when a sealClient is supplied at construction time.
+ */
+declare class EndlessVectorSeal {
+    _sessionKey: any | null;
+
+    constructor(params?: {
+        endlessVector?: EndlessVector;
+        sealClient?: any | null;
+        sessionKey?: any | null;
+        signer?: any | null;
+        sealTtlMin?: number;
+    });
+
+    get isEnabled(): boolean;
+
+    static generateAesKey(): Uint8Array;
+    setAesKey(key: Uint8Array): void;
+    wrapAesKey(aesKey: Uint8Array): Promise<Uint8Array>;
+    encryptItem(plaintext: Uint8Array): Promise<Uint8Array>;
+    decryptItem(payload: Uint8Array): Promise<Uint8Array>;
+}
+
+/**
+ * Represents a history item in an EndlessVector, managing a segment of the vector's data.
+ */
+declare class EndlessVectorHistory {
+    suiClient: SuiGrpcClient;
     id: string;
     index: number;
 
     constructor(params?: EndlessVectorHistoryConstructorParams);
 
-    /**
-     * Sets the fields data for this history item. Called by loader of EndlessVector.
-     */
     setFields(fields: any): void;
-
-    /**
-     * Checks if this history item has been initialized and is ready for use.
-     */
     isReady(): boolean;
-
-    /**
-     * Initializes this history item by loading its data from the blockchain.
-     * Uses promise-based synchronization to prevent multiple concurrent initializations.
-     */
     initialize(): Promise<boolean>;
 
-    /**
-     * Gets the last index position that this history item covers.
-     */
     get endsAt(): number | undefined;
-
-    /**
-     * Indicates whether the first item in this history contains suffix bytes that should be
-     * added to the last item from the previous history segment.
-     */
     get firstItemIsFromPreviousHistory(): boolean;
-
-    /**
-     * Gets the first index position that this history item covers.
-     */
     get startsAt(): number;
-
-    /**
-     * Gets the number of bytes from the next history item that should be appended
-     * to the last item in this history segment.
-     */
     get followedByNextBytes(): number;
 
-    /**
-     * Retrieves the byte array at the specified index within this history segment.
-     */
     at(i: number): Promise<Uint8Array>;
-
-    /**
-     * Gets the suffix bytes stored in this history item that should be appended
-     * to the last item of the previous history segment.
-     */
-    getSuffixStoredBytes(): Uint8Array;
+    getSuffixStoredBytes(): Promise<Uint8Array>;
 }
 
 /**
  * Represents an archive item in an EndlessVector
  */
-export declare class EndlessVectorArchive {
-    suiClient: SuiClient;
+declare class EndlessVectorArchive {
+    suiClient: SuiGrpcClient;
     id: string;
     index: number;
     historyTableId: string | null;
@@ -169,59 +242,25 @@ export declare class EndlessVectorArchive {
 
     constructor(params?: EndlessVectorArchiveConstructorParams);
 
-    /**
-     * Sets the fields data for this archive item. Called by loader of EndlessVector.
-     */
     setFields(fields: any): void;
-
-    /**
-     * Checks if this archive item has been initialized and is ready for use.
-     */
     isReady(): boolean;
 
-    /**
-     * Gets the total number of items stored in this archive.
-     */
     get length(): number;
-
-    /**
-     * Gets the first index position that this archive covers.
-     */
     get startsAt(): number;
-
-    /**
-     * Gets the last index position that this archive covers.
-     */
     get endsAt(): number | undefined;
 
-    /**
-     * Initializes this archive item by loading its data from the blockchain.
-     */
     initialize(): Promise<boolean>;
-
-    /**
-     * Gets a history item within this archive by its index.
-     */
     getHistory(historyIndex: number | string): Promise<EndlessVectorHistory>;
-
-    /**
-     * Retrieves the byte array at the specified index within this archive.
-     */
     at(i: number): Promise<Uint8Array>;
-
-    /**
-     * Gets suffix bytes from a history item at the specified index within this archive.
-     */
     getSuffixFromHistoryItemOfIndex(i: number): Promise<Uint8Array>;
 }
 
 /**
  * Represents an endless vector data structure that can grow beyond Sui object size limits
- * by storing overflow data in history items. Provides seamless access to all elements regardless
- * of whether they're stored in the current object or historical segments.
+ * by storing overflow data in history items.
  */
-export declare class EndlessVector {
-    suiClient: SuiClient;
+declare class EndlessVector {
+    suiClient: SuiGrpcClient;
     id: string;
     binaryLength: number;
     length: number;
@@ -233,26 +272,22 @@ export declare class EndlessVector {
     archivedAtLength: number;
     archivedFromLength: number;
     burnedArchiveCount: number;
+    sealEncryptedKey: Uint8Array | null;
+    seal: EndlessVectorSeal;
+    walrus: EndlessVectorWalrus;
 
     constructor(params?: EndlessVectorConstructorParams);
 
-    /**
-     * Static factory method to create a new empty EndlessVector on the blockchain.
-     */
+    isEncrypted(): Promise<boolean>;
+
     static create(params: EndlessVectorCreateParams): Promise<EndlessVector>;
 
-    /**
-     * Creates an empty EndlessVector and returns the vector input reference.
-     */
     static getCreateTransactionAndReturnVectorInput(
         params: GetCreateTransactionParams,
         arr?: Uint8Array | null,
         txToAppendTo?: Transaction | null
     ): Promise<TransactionResult>;
 
-    /**
-     * Attach move calls to transaction, to push item into endlessvector, handling large arrays by chunking them.
-     */
     static composePushTransaction(
         packageId: string,
         vectorInput: TransactionObjectArgument,
@@ -260,89 +295,44 @@ export declare class EndlessVector {
         tx: Transaction
     ): Transaction;
 
-    /**
-     * Check if the EndlessVector instance is writable
-     */
     get isWritable(): boolean;
-
-    /**
-     * Gets the first index that is stored in the current EndlessVector object (not in history items).
-     */
     get firstNotHistoryIndex(): number;
 
-    /**
-     * Forces re-initialization of the EndlessVector to reload data from the blockchain.
-     */
     reInitialize(): void;
-
-    /**
-     * Initializes the EndlessVector by loading data from the Sui blockchain.
-     */
     initialize(): Promise<void>;
 
-    /**
-     * Gets a history item by its index, loading it from the blockchain if needed.
-     */
     getHistory(historyIndex: number | string): Promise<EndlessVectorHistory>;
-
-    /**
-     * Gets an archive item by its index, loading it from the blockchain if needed.
-     */
     getArchive(archiveIndex: number | string): Promise<EndlessVectorArchive>;
 
-    /**
-     * Loads multiple history items in a single batch request for efficiency.
-     */
     loadHistoryItemsBunch(historyItems: EndlessVectorHistory[]): Promise<void>;
-
-    /**
-     * Loads a single history item, batching requests for efficiency.
-     */
     loadHistoryItem(historyItem: EndlessVectorHistory): Promise<EndlessVectorHistory>;
-
-    /**
-     * Loads multiple archive items in a single batch request for efficiency.
-     */
     loadArchiveItemsBunch(archiveItems: EndlessVectorArchive[]): Promise<void>;
-
-    /**
-     * Loads a single archive item, batching requests for efficiency.
-     */
     loadArchiveItem(archiveItem: EndlessVectorArchive): Promise<EndlessVectorArchive>;
 
-    /**
-     * Retrieves the byte array at the specified index from either current items or history.
-     */
     at(i: number): Promise<Uint8Array>;
-
-    /**
-     * Gets suffix bytes from a history item at the specified index.
-     */
     getSuffixFromHistoryItemOfIndex(i: number): Promise<Uint8Array | undefined>;
 
-    /**
-     * Creates a transaction to push new byte arrays to the EndlessVector.
-     */
     getPushTransaction(arr: Uint8Array | Uint8Array[], txToAppendTo?: Transaction | null): Transaction;
-
-    /**
-     * Pushes new byte array to the EndlessVector, creating and executing the necessary transaction.
-     */
     push(arr: Uint8Array | Uint8Array[], params?: TransactionOptions): Promise<boolean>;
 
-    /**
-     * Creates a transaction to concatenate EndlessVector(s) into this one.
-     */
     getConcatTransaction(
         other: string | EndlessVector | Array<string | EndlessVector>,
         txToAppendTo?: Transaction | null
     ): Transaction;
-
-    /**
-     * Concatenates EndlessVector(s) into this one, creating and executing the necessary transaction.
-     */
     concat(other: string | EndlessVector | Array<string | EndlessVector>, params?: TransactionOptions): Promise<boolean>;
+
+    getArchiveTransaction(txToAppendTo?: Transaction | null): Transaction;
+    archive(params?: TransactionOptions): Promise<boolean>;
+
+    getBurnArchiveTransaction(txToAppendTo?: Transaction | null): Transaction;
+    burnArchive(params?: TransactionOptions): Promise<boolean>;
+
+    executeAndWaitForTransaction(tx: Transaction, params?: {
+        timeout?: number;
+        pollIntervalMs?: number;
+        include?: any;
+    }): Promise<any>;
 }
 
 export { EndlessVector as default };
-export { EndlessVector, EndlessVectorArchive, EndlessVectorHistory };
+export { EndlessVector, EndlessVectorArchive, EndlessVectorHistory, EndlessVectorItem, EndlessVectorWalrus, EndlessVectorSeal };
