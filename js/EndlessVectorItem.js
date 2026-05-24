@@ -11,6 +11,18 @@
  *   blob  item  → { bytes: null,       blob: {...},  meta: "<base64>" }
  *   empty item  → { bytes: null,       blob: null,  meta: "<base64>" }
  */
+function decodeBase64(value) {
+    if (typeof Buffer !== 'undefined') {
+        return new Uint8Array(Buffer.from(value, 'base64'));
+    }
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+}
+
 export default class EndlessVectorItem {
     /**
      * @param {Object} params
@@ -105,12 +117,12 @@ export default class EndlessVectorItem {
 
         // Legacy: bare base64 string (whole item serialised as base64)
         if (typeof raw === 'string') {
-            return new EndlessVectorItem({ type: 'bytes', bytes: new Uint8Array(Buffer.from(raw, 'base64')), ...context });
+            return new EndlessVectorItem({ type: 'bytes', bytes: decodeBase64(raw), ...context });
         }
 
         // gRPC JSON struct
         const meta = raw.meta
-            ? new Uint8Array(Buffer.from(raw.meta, 'base64'))
+            ? decodeBase64(raw.meta)
             : new Uint8Array();
 
         if (raw.blob != null) {
@@ -119,7 +131,7 @@ export default class EndlessVectorItem {
 
         if (raw.bytes != null) {
             const bytes = typeof raw.bytes === 'string'
-                ? new Uint8Array(Buffer.from(raw.bytes, 'base64'))
+                ? decodeBase64(raw.bytes)
                 : new Uint8Array(raw.bytes);
             return new EndlessVectorItem({ type: 'bytes', bytes, meta, ...context });
         }
