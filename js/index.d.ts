@@ -173,6 +173,36 @@ declare class EndlessVectorWalrus {
     });
 
     readBlobBytes(blobData: any): Promise<Uint8Array>;
+    /**
+     * Minimum Walrus storage `end_epoch` across every Blob in this vector (items +
+     * history + non-burned archive), read on-chain via transaction simulation.
+     * Resolves to `null` when the vector holds no blobs.
+     */
+    minBlobEndEpoch(): Promise<number | null>;
+    /**
+     * Exact WAL cost (FROST) to bring every blob up to `targetEndEpoch` via
+     * {@link extendBlobsToEpoch}, read on-chain via simulation. `0n` if nothing needs it.
+     */
+    extendBlobsCostToEpoch(targetEndEpoch: number): Promise<bigint>;
+    /**
+     * Builds (without executing) the transaction that extends every blob up to
+     * `targetEndEpoch`. Sources/returns the WAL payment automatically unless `walCoin` is given.
+     */
+    getExtendBlobsToEpochTransaction(targetEndEpoch: number, params?: {
+        cost?: bigint;
+        walCoin?: TransactionObjectArgument;
+        txToAppendTo?: Transaction | null;
+    }): Promise<Transaction>;
+    /**
+     * Extends every blob up to `targetEndEpoch` in one transaction; resolves to the new
+     * minimum blob end epoch.
+     */
+    extendBlobsToEpoch(targetEndEpoch: number, params?: {
+        cost?: bigint;
+        walCoin?: TransactionObjectArgument;
+        timeout?: number;
+        pollIntervalMs?: number;
+    }): Promise<number | null>;
     getPushBlobTransaction(blobObjectId: string, txToAppendTo?: Transaction | null): Transaction;
     pushBlob(data: Uint8Array, params?: {
         epochs?: number;

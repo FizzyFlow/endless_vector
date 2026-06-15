@@ -1,4 +1,7 @@
-import { Transaction } from '@mysten/sui/transactions';
+import { Transaction, coinWithBalance } from '@mysten/sui/transactions';
+import { bcs } from '@mysten/sui/bcs';
+
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000000000000000000000000000';
 
 /**
  * @typedef {import('@mysten/sui/grpc').SuiGrpcClient} SuiGrpcClient
@@ -93,6 +96,254 @@ export default class EndlessVectorWalrus {
             b64 += encoded;
         }
         return b64;
+    }
+
+    /**
+     * Simulates `tx` (devInspect — no signing, no gas, ownership checks disabled) and returns
+     * the BCS bytes of the first command's first return value. Used by the on-chain view
+     * helpers below.
+     * @param {Transaction} tx - a transaction whose first command is the view moveCall
+     * @param {string} label - used in error messages
+     * @returns {Promise<Uint8Array>}
+     * @private
+     */
+    async _simulateReturnBytes(tx, label) {
+        const ev = this._endlessVector;
+        // A sender is required to build the transaction for simulation; any address works
+        // since `checksEnabled: false` skips ownership/gas validation for these reads.
+        const sender = this._senderAddress || ev.suiClient?.address || ZERO_ADDRESS;
+        tx.setSenderIfNotSet(sender);
+
+        const sim = await ev.suiClient.simulateTransaction({
+            transaction: tx,
+            include: { commandResults: true },
+            checksEnabled: false,
+        });
+
+        if (sim.FailedTransaction) {
+            throw new Error(`${label} simulation failed`);
+        }
+
+        const returnValue = sim.commandResults?.[0]?.returnValues?.[0];
+        if (!returnValue?.bcs) {
+            throw new Error(`${label} simulation returned no value`);
+        }
+        return new Uint8Array(returnValue.bcs);
+    }
+
+    /**
+     * Reads the minimum Walrus storage `end_epoch` across every Blob held by this vector
+     * (current items + history segments + non-burned archive segments), by calling the
+     * `endless_walrus::min_blob_end_epoch` view function via transaction simulation
+     * (devInspect). No transaction is signed or submitted, so this works on a read-only
+     * vector and costs no gas.
+     *
+     * The on-chain function returns `Option<u32>`; this resolves to `null` when the vector
+     * holds no blobs, or the smallest end epoch (a `number`) otherwise.
+     *
+     * @returns {Promise<number|null>} Minimum blob end epoch, or `null` if there are no blobs
+     * @throws {Error} If packageId or the vector id is not set, or the simulation fails
+     */
+    async minBlobEndEpoch() {
+        const ev = this._endlessVector;
+        if (!ev._packageId) {
+            throw new Error('packageId is required to read min_blob_end_epoch');
+        }
+        if (!ev.id) {
+            throw new Error('vector id is required to read min_blob_end_epoch');
+        }
+
+        const tx = new Transaction();
+        tx.moveCall({
+            target: `${ev._packageId}::endless_walrus::min_blob_end_epoch`,
+            arguments: [tx.object(ev.id)],
+        });
+
+        // Move return type is Option<u32>: BCS is [0] for none, or [1, <u32-le>] for some.
+        const bytes = await this._simulateReturnBytes(tx, 'min_blob_end_epoch');
+        const decoded = bcs.option(bcs.u32()).parse(bytes);
+        return decoded === null ? null : Number(decoded);
+    }
+
+    /**
+     * The Walrus System shared object id, resolved from the configured WalrusClient.
+     * @returns {Promise<string>}
+     * @throws {Error} If no walrusClient is configured
+     * @private
+     */
+    async _getSystemObjectId() {
+        if (!this._walrusClient) {
+            throw new Error('walrusClient is required to resolve the Walrus System object');
+        }
+        if (!this.__systemObjectId) {
+            const systemObject = await this._walrusClient.systemObject();
+            this.__systemObjectId = systemObject.id?.id ?? systemObject.id;
+        }
+        return this.__systemObjectId;
+    }
+
+    /**
+     * The current `storage_price_per_unit_size` from on-chain system state (FROST per
+     * 1 MiB storage unit per epoch).
+     * @returns {Promise<bigint>}
+     * @private
+     */
+    async _getStoragePricePerUnit() {
+        if (!this._walrusClient) {
+            throw new Error('walrusClient is required to read the storage price');
+        }
+        const systemState = await this._walrusClient.systemState();
+        return BigInt(systemState.storage_price_per_unit_size);
+    }
+
+    /**
+     * The Move type of a WAL coin (e.g. `0x…::wal::WAL`), derived from the
+     * `extend_blobs_to_epoch` Move function signature (its `payment: &mut Coin<WAL>` param).
+     * Cached after the first lookup.
+     * @returns {Promise<string>}
+     * @private
+     */
+    async _getWalCoinType() {
+        const ev = this._endlessVector;
+        if (this.__walCoinType) return this.__walCoinType;
+
+        const { function: normalized } = await ev.suiClient.getMoveFunction({
+            packageId: ev._packageId,
+            moduleName: 'endless_walrus',
+            name: 'extend_blobs_to_epoch',
+        });
+
+        // params: (&mut EndlessWalrusVector, &mut System, u32 target, &mut Coin<WAL>)
+        const param = normalized?.parameters?.[3];
+        const typeArg = param?.body?.$kind === 'datatype' ? param.body.datatype.typeParameters?.[0] : undefined;
+        const walCoinType = typeArg?.$kind === 'datatype' ? typeArg.datatype.typeName : null;
+        if (!walCoinType) {
+            throw new Error('could not resolve WAL coin type from extend_blobs_to_epoch signature');
+        }
+
+        this.__walCoinType = walCoinType;
+        return walCoinType;
+    }
+
+    /**
+     * Reads the exact WAL cost (in FROST) to bring every blob in this vector up to
+     * `targetEndEpoch` via {@link extendBlobsToEpoch}, by calling the
+     * `endless_walrus::extend_blobs_cost_to_epoch` view function via simulation (devInspect).
+     * Returns `0n` when nothing needs extending.
+     *
+     * @param {number} targetEndEpoch - the storage end epoch every blob should reach
+     * @returns {Promise<bigint>} Required payment in FROST
+     * @throws {Error} If packageId/vector id are unset or walrusClient is missing
+     */
+    async extendBlobsCostToEpoch(targetEndEpoch) {
+        const ev = this._endlessVector;
+        if (!ev._packageId) {
+            throw new Error('packageId is required to read extend_blobs_cost_to_epoch');
+        }
+        if (!ev.id) {
+            throw new Error('vector id is required to read extend_blobs_cost_to_epoch');
+        }
+
+        const [systemObjectId, pricePerUnit] = await Promise.all([
+            this._getSystemObjectId(),
+            this._getStoragePricePerUnit(),
+        ]);
+
+        const tx = new Transaction();
+        tx.moveCall({
+            target: `${ev._packageId}::endless_walrus::extend_blobs_cost_to_epoch`,
+            arguments: [
+                tx.object(ev.id),
+                tx.object(systemObjectId),
+                tx.pure.u32(targetEndEpoch),
+                tx.pure.u64(pricePerUnit),
+            ],
+        });
+
+        const bytes = await this._simulateReturnBytes(tx, 'extend_blobs_cost_to_epoch');
+        return BigInt(bcs.u64().parse(bytes)); // bcs.u64 parses to a string; normalize to bigint
+    }
+
+    /**
+     * Builds (without executing) a transaction that extends every blob in this vector up to
+     * `targetEndEpoch` in a single `extend_blobs_to_epoch_entry` call. The payment coin is
+     * resolved automatically from the sender's WAL balance and the leftover is returned to
+     * the sender, unless a `walCoin` is supplied.
+     *
+     * @param {number} targetEndEpoch - storage end epoch every blob should reach
+     * @param {Object} [params={}]
+     * @param {bigint} [params.cost] - precomputed cost (FROST); skips the on-chain cost read
+     * @param {import('@mysten/sui/transactions').TransactionObjectArgument} [params.walCoin] - WAL coin to pay from; if omitted, one is sourced from the sender's balance
+     * @param {Transaction} [params.txToAppendTo=null]
+     * @returns {Promise<Transaction>}
+     * @throws {Error} If packageId is not set
+     */
+    async getExtendBlobsToEpochTransaction(targetEndEpoch, params = {}) {
+        const ev = this._endlessVector;
+        if (!ev._packageId) {
+            throw new Error('packageId is required to compose extend_blobs_to_epoch transaction');
+        }
+
+        const systemObjectId = await this._getSystemObjectId();
+        const tx = params.txToAppendTo ?? new Transaction();
+
+        // Resolve the payment coin: caller-supplied, or sourced from the sender's WAL balance
+        // for exactly the required cost.
+        let walCoin = params.walCoin ?? null;
+        let returnCoin = false;
+        if (!walCoin) {
+            const cost = params.cost ?? await this.extendBlobsCostToEpoch(targetEndEpoch);
+            const walCoinType = await this._getWalCoinType();
+            walCoin = tx.add(coinWithBalance({ balance: cost, type: walCoinType }));
+            returnCoin = true;
+        }
+
+        tx.moveCall({
+            target: `${ev._packageId}::endless_walrus::extend_blobs_to_epoch_entry`,
+            arguments: [
+                tx.object(ev.id),
+                tx.object(systemObjectId),
+                tx.pure.u32(targetEndEpoch),
+                walCoin,
+            ],
+        });
+
+        // The payment is borrowed (&mut), so the coin object survives the call; return any
+        // unspent balance to the sender so it is not left dangling.
+        if (returnCoin) {
+            const sender = this._senderAddress || ev.suiClient?.address;
+            if (!sender) throw new Error('senderAddress is required to return the leftover WAL coin');
+            tx.transferObjects([walCoin], sender);
+        }
+
+        return tx;
+    }
+
+    /**
+     * Extends every blob in this vector up to `targetEndEpoch` in a single transaction,
+     * signing and executing it via the parent vector. Blobs already valid through the target
+     * (and expired blobs, which Walrus cannot extend) are skipped on-chain.
+     *
+     * @param {number} targetEndEpoch - storage end epoch every blob should reach
+     * @param {Object} [params={}] - forwarded to {@link getExtendBlobsToEpochTransaction} and execution
+     * @param {bigint} [params.cost] - precomputed cost (FROST)
+     * @param {import('@mysten/sui/transactions').TransactionObjectArgument} [params.walCoin]
+     * @param {number} [params.timeout]
+     * @param {number} [params.pollIntervalMs]
+     * @returns {Promise<number|null>} The new minimum blob end epoch after extension
+     * @throws {Error} If the parent vector is not writable
+     */
+    async extendBlobsToEpoch(targetEndEpoch, params = {}) {
+        const ev = this._endlessVector;
+        if (!ev.isWritable) {
+            throw new Error('EndlessVector is not writable, packageId and signAndExecuteTransaction are required');
+        }
+
+        const tx = await this.getExtendBlobsToEpochTransaction(targetEndEpoch, params);
+        await ev.executeAndWaitForTransaction(tx, params);
+        ev.reInitialize();
+
+        return await this.minBlobEndEpoch();
     }
 
     /**

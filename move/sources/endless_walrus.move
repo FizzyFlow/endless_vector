@@ -3,13 +3,21 @@ module endless_vector::endless_walrus {
 
     const SAFE_INNER_SIZE: u64 = 128*1024;  // Keep in object.items, more in history/archive
 
+    // Walrus charges storage per "unit" of 1 MiB; mirrors `BYTES_PER_UNIT_SIZE` in
+    // walrus::system_state_inner. Cost = ceil(storage_size / unit) * price_per_unit * epochs.
+    const BYTES_PER_UNIT_SIZE: u64 = 1_024 * 1_024;
+
     use sui::table::{Self, Table};
+    use sui::coin::Coin;
 
     use endless_vector::endless_walrus_item::{
         Self as item,
         EndlessWalrusItem,
     };
-    use walrus::blob::Blob;
+    use walrus::blob::{Self, Blob};
+    use walrus::system::System;
+    use walrus::storage_resource;
+    use wal::wal::WAL;
 
     const EChunkIsTooLarge: u64 = 91;
     const EArchiveHasBeenBurned: u64 = 92;
@@ -345,6 +353,209 @@ module endless_vector::endless_walrus {
 
     public fun archive_items_count(endless_v: &EndlessWalrusVector): u64 {
         endless_v.archive_items_count
+    }
+
+    // ======================================================================
+    // Walrus blob storage lifetime: inspect & extend
+    // ======================================================================
+
+    /// Fold the minimum blob `end_epoch` over a vector of items into `min`.
+    fun fold_min_blob_end_epoch(items: &vector<EndlessWalrusItem>, min: &mut Option<u32>) {
+        let n = vector::length(items);
+        let mut i = 0;
+        while (i < n) {
+            let it = vector::borrow(items, i);
+            if (item::item_has_blob(it)) {
+                let end = blob::end_epoch(item::item_borrow_blob(it));
+                if (std::option::is_none(min) || end < *std::option::borrow(min)) {
+                    *min = std::option::some(end);
+                };
+            };
+            i = i + 1;
+        };
+    }
+
+    /// Minimum `end_epoch` across every Blob held by this vector
+    /// (.items + history segments + non-burned archive segments).
+    /// Returns `none` if the vector holds no blobs.
+    public fun min_blob_end_epoch(endless_v: &EndlessWalrusVector): Option<u32> {
+        let mut min = std::option::none<u32>();
+
+        fold_min_blob_end_epoch(&endless_v.items, &mut min);
+
+        // History segments.
+        if (std::option::is_some(&endless_v.history)) {
+            let history = std::option::borrow(&endless_v.history);
+            let mut k = 0;
+            while (k < endless_v.history_items_count) {
+                fold_min_blob_end_epoch(&table::borrow(history, k).items, &mut min);
+                k = k + 1;
+            };
+        };
+
+        // Non-burned archive segments.
+        let mut a = endless_v.burned_archive_count;
+        while (a < endless_v.archive_items_count) {
+            let arch = table::borrow(&endless_v.archive, a);
+            let seg_count = table::length(&arch.history);
+            let mut h = 0;
+            while (h < seg_count) {
+                fold_min_blob_end_epoch(&table::borrow(&arch.history, h).items, &mut min);
+                h = h + 1;
+            };
+            a = a + 1;
+        };
+
+        min
+    }
+
+    /// Extend, for every blob item in `items`, the storage so it reaches `target_end_epoch`.
+    /// Blobs already valid through the target are skipped; expired blobs (which Walrus cannot
+    /// extend) are skipped.
+    fun extend_items_to_epoch(
+        items: &mut vector<EndlessWalrusItem>,
+        walrus_system: &mut System,
+        current_epoch: u32,
+        target_end_epoch: u32,
+        payment: &mut Coin<WAL>,
+    ) {
+        let n = vector::length(items);
+        let mut i = 0;
+        while (i < n) {
+            let it = vector::borrow_mut(items, i);
+            if (item::item_has_blob(it)) {
+                let blob_ref = item::item_borrow_blob_mut(it);
+                let end = blob::end_epoch(blob_ref);
+                if (end < target_end_epoch && current_epoch < end) {
+                    walrus::system::extend_blob(
+                        walrus_system,
+                        blob_ref,
+                        target_end_epoch - end,
+                        payment,
+                    );
+                };
+            };
+            i = i + 1;
+        };
+    }
+
+    /// Extend every Blob whose storage ends before `target_end_epoch` so it reaches
+    /// `target_end_epoch`, in a single call. Blobs already valid through the target are
+    /// skipped; expired blobs (current_epoch >= end_epoch, which Walrus cannot extend) are
+    /// skipped. Covers .items + history segments + non-burned archive segments.
+    public fun extend_blobs_to_epoch(
+        endless_v: &mut EndlessWalrusVector,
+        walrus_system: &mut System,
+        target_end_epoch: u32,
+        payment: &mut Coin<WAL>,
+    ) {
+        let current_epoch = walrus::system::epoch(walrus_system);
+
+        extend_items_to_epoch(&mut endless_v.items, walrus_system, current_epoch, target_end_epoch, payment);
+
+        // History segments.
+        if (std::option::is_some(&endless_v.history)) {
+            let mut k = 0;
+            while (k < endless_v.history_items_count) {
+                let seg = table::borrow_mut(std::option::borrow_mut(&mut endless_v.history), k);
+                extend_items_to_epoch(&mut seg.items, walrus_system, current_epoch, target_end_epoch, payment);
+                k = k + 1;
+            };
+        };
+
+        // Non-burned archive segments.
+        let mut a = endless_v.burned_archive_count;
+        while (a < endless_v.archive_items_count) {
+            let arch = table::borrow_mut(&mut endless_v.archive, a);
+            let seg_count = table::length(&arch.history);
+            let mut h = 0;
+            while (h < seg_count) {
+                let seg = table::borrow_mut(&mut arch.history, h);
+                extend_items_to_epoch(&mut seg.items, walrus_system, current_epoch, target_end_epoch, payment);
+                h = h + 1;
+            };
+            a = a + 1;
+        };
+    }
+
+    public entry fun extend_blobs_to_epoch_entry(
+        endless_v: &mut EndlessWalrusVector,
+        walrus_system: &mut System,
+        target_end_epoch: u32,
+        payment: &mut Coin<WAL>,
+    ) {
+        extend_blobs_to_epoch(endless_v, walrus_system, target_end_epoch, payment);
+    }
+
+    /// WAL cost to extend a single blob item up to `target_end_epoch`, mirroring the
+    /// charge in walrus::system_state_inner::extend_blob: for each epoch in the extension,
+    /// `ceil(storage_size / 1MiB) * storage_price_per_unit_size`. Returns 0 for non-blob
+    /// items, blobs already valid through the target, and expired blobs (which are skipped).
+    fun blob_extend_cost(it: &EndlessWalrusItem, current_epoch: u32, target_end_epoch: u32, price_per_unit: u64): u64 {
+        if (!item::item_has_blob(it)) {
+            return 0
+        };
+        let blob_ref = item::item_borrow_blob(it);
+        let end = blob::end_epoch(blob_ref);
+        if (end >= target_end_epoch || current_epoch >= end) {
+            return 0
+        };
+        let storage_size = storage_resource::size(blob::storage(blob_ref));
+        // ceil(storage_size / BYTES_PER_UNIT_SIZE)
+        let storage_units = (storage_size + BYTES_PER_UNIT_SIZE - 1) / BYTES_PER_UNIT_SIZE;
+        let epochs = ((target_end_epoch - end) as u64);
+        storage_units * price_per_unit * epochs
+    }
+
+    /// Sum `blob_extend_cost` over a vector of items into `acc`.
+    fun fold_extend_cost_over_items(items: &vector<EndlessWalrusItem>, current_epoch: u32, target_end_epoch: u32, price_per_unit: u64, acc: &mut u64) {
+        let n = vector::length(items);
+        let mut i = 0;
+        while (i < n) {
+            *acc = *acc + blob_extend_cost(vector::borrow(items, i), current_epoch, target_end_epoch, price_per_unit);
+            i = i + 1;
+        };
+    }
+
+    /// Total WAL (in FROST) required to bring every blob in this vector up to
+    /// `target_end_epoch` via `extend_blobs_to_epoch`. Covers items + history segments +
+    /// non-burned archive segments. Read off-chain via transaction simulation (devInspect)
+    /// to fund the payment coin exactly. Returns 0 if nothing needs extending.
+    ///
+    /// `price_per_unit` is the system's `storage_price_per_unit_size` — the on-chain getter
+    /// is test-only, so callers pass the value read off-chain (e.g. WalrusClient.systemState).
+    /// `current_epoch` comes from the public `system::epoch`.
+    public fun extend_blobs_cost_to_epoch(endless_v: &EndlessWalrusVector, walrus_system: &System, target_end_epoch: u32, price_per_unit: u64): u64 {
+        let current_epoch = walrus::system::epoch(walrus_system);
+
+        let mut total = 0u64;
+
+        fold_extend_cost_over_items(&endless_v.items, current_epoch, target_end_epoch, price_per_unit, &mut total);
+
+        // History segments.
+        if (std::option::is_some(&endless_v.history)) {
+            let history = std::option::borrow(&endless_v.history);
+            let mut k = 0;
+            while (k < endless_v.history_items_count) {
+                fold_extend_cost_over_items(&table::borrow(history, k).items, current_epoch, target_end_epoch, price_per_unit, &mut total);
+                k = k + 1;
+            };
+        };
+
+        // Non-burned archive segments.
+        let mut a = endless_v.burned_archive_count;
+        while (a < endless_v.archive_items_count) {
+            let arch = table::borrow(&endless_v.archive, a);
+            let seg_count = table::length(&arch.history);
+            let mut h = 0;
+            while (h < seg_count) {
+                fold_extend_cost_over_items(&table::borrow(&arch.history, h).items, current_epoch, target_end_epoch, price_per_unit, &mut total);
+                h = h + 1;
+            };
+            a = a + 1;
+        };
+
+        total
     }
 
     public fun archive(endless_v: &mut EndlessWalrusVector, ctx: &mut TxContext) {

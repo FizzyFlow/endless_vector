@@ -58,6 +58,10 @@ module endless_vector::endless_walrus_item {
         option::borrow(&item.blob)
     }
 
+    public fun item_borrow_blob_mut(item: &mut EndlessWalrusItem): &mut Blob {
+        option::borrow_mut(&mut item.blob)
+    }
+
     /// Bytes actually stored inside this object: full length for the bytes variant,
     /// `BLOB_STORAGE_VOLUME` for the Blob variant (only a reference is kept; data lives in Walrus),
     /// 0 for the empty variant; plus `vector::length(&meta)` for any item.

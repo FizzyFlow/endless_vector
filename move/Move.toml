@@ -5,6 +5,7 @@ edition = "2024.beta"
 
 [dependencies]
 Walrus = { local = "../../seal_walrus_localnet/mysten_contracts_forks/original_walrus_contracts/walrus" }
+WAL = { local = "../../seal_walrus_localnet/mysten_contracts_forks/original_walrus_contracts/wal" }
 
 [addresses]
 endless_vector =  "0x0"

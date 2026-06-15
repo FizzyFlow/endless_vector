@@ -64,7 +64,7 @@ Accepts all constructor params above, plus:
 | `array` | Uint8Array \| Uint8Array[] | no | Initial item(s) to push |
 | `gasCoin` | `{objectId, digest, version}` | no | Explicit gas coin for parallel creation |
 | `options.timeout` | number | no | Tx confirmation timeout, ms (default: 30000) |
-| `options.pollIntervalMs` | number | no | Tx poll interval, ms (default: 1000) |
+| `options.pollIntervalMs` | number | no | Tx poll interval, ms (default: 200) |
 
 When `sealClient` is provided, the vector is created with Seal encryption enabled. A random AES-256-GCM key is generated, Seal-wrapped scoped to the new vector's object ID, and stored on-chain. Any initial `array` items are encrypted before storage.
 
@@ -214,6 +214,49 @@ await ev.push(largeFile); // >120 KB → stored as Walrus blob
 const data = await ev.at(0); // fetched from Walrus transparently
 ```
 
+### Blob lifetime: inspect & extend
+
+Walrus blobs are backed by storage that expires at an `end_epoch`. The Walrus companion (`ev.walrus`) can report when a vector's blobs expire and renew them all in a single transaction — covering blobs in current items, history segments, and non-burned archive segments. These methods require `walrusClient` (to resolve the Walrus `System` object and current storage price).
+
+#### minBlobEndEpoch()
+
+Async. Reads the soonest-expiring blob's `end_epoch` across the whole vector, on-chain via simulation (no gas, works read-only). Returns `null` if the vector holds no blobs.
+
+```javascript
+const minEpoch = await ev.walrus.minBlobEndEpoch(); // number | null
+```
+
+#### extendBlobsCostToEpoch(targetEndEpoch)
+
+Async. Returns the exact WAL cost (in FROST, as a `bigint`) to bring every blob up to `targetEndEpoch`. Computed on-chain, so it accounts for every blob across all tiers — even ones not loaded in the SDK. `0n` when nothing needs extending.
+
+```javascript
+const cost = await ev.walrus.extendBlobsCostToEpoch(minEpoch + 10); // bigint (FROST)
+```
+
+#### extendBlobsToEpoch(targetEndEpoch, params?)
+
+Async. Extends every blob whose storage ends before `targetEndEpoch` up to that epoch, in one transaction. Blobs already valid through the target (and expired blobs, which Walrus cannot extend) are skipped on-chain. Resolves to the new minimum blob end epoch. Requires writable mode and `senderAddress`.
+
+The WAL payment is sourced automatically from the sender's balance for exactly the on-chain cost, and any leftover is returned to the sender. Pass `walCoin` to pay from a specific coin, or `cost` to skip the cost read.
+
+```javascript
+const minEpoch = await ev.walrus.minBlobEndEpoch();
+const newMin = await ev.walrus.extendBlobsToEpoch(minEpoch + 10);
+// newMin === minEpoch + 10
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `cost` | bigint | no | Precomputed cost in FROST; skips the on-chain cost read |
+| `walCoin` | TransactionObjectArgument | no | WAL coin to pay from; if omitted, one is sourced from the sender's balance |
+| `timeout` | number | no | Tx confirmation timeout, ms |
+| `pollIntervalMs` | number | no | Tx poll interval, ms |
+
+#### getExtendBlobsToEpochTransaction(targetEndEpoch, params?)
+
+Async. Returns the extend `Transaction` without executing, for batching. Accepts `cost`, `walCoin`, and `txToAppendTo`.
+
 ## Seal Encryption
 
 Seal provides end-to-end encryption for vector items. The access policy (`seal_approve_endless_vector_owner`) ensures only the vector owner can decrypt.
@@ -315,8 +358,12 @@ const vectors = await Promise.all(
 ## Testing
 
 ```bash
-pnpm test:base    # core tests
-pnpm test:seal    # seal encryption tests
+pnpm test:base                   # core tests
+pnpm test:seal                   # seal encryption tests
+pnpm test:walrus-blobs           # walrus blob storage
+pnpm test:walrus-blobs-sdk       # walrus blob storage (SDK client)
+pnpm test:walrus-blobs-history   # blob storage across history segments
+pnpm test:walrus-blobs-extend    # blob lifetime: min end epoch, cost, extend
 ```
 
 Tests use [vitest](https://vitest.dev/) and require a local Sui validator with Walrus and Seal localnet services.

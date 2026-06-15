@@ -1,6 +1,6 @@
 {
     "name": "@fizzyflow/endless-vector",
-    "version": "0.0.8",
+    "version": "0.0.9",
     "description": "",
     "type": "module",
     "main": "./index.js",
@@ -29,11 +29,12 @@
         "test:walrus-blobs": "vitest run ./test/walrus_blobs.test.js",
         "test:walrus-blobs-sdk": "vitest run ./test/walrus_blobs_sdk.test.js",
         "test:walrus-blobs-history": "vitest run --config vitest.config.js ./test/walrus_blobs_history.test.js",
+        "test:walrus-blobs-extend": "vitest run --config vitest.config.js ./test/walrus_blobs_extend.test.js",
         "test:base": "vitest run ./test/base.test.js",
         "test:seal": "vitest run --config vitest.config.js ./test/seal.test.js"
     },
     "peerDependencies": {
-        "@mysten/sui": "^1.45.0"
+        "@mysten/sui": "^2.16.0"
     },
     "devDependencies": {
         "@mysten/seal": "^1.1.3",

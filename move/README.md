@@ -1,99 +1,110 @@
 # Endless Vector - Move Smart Contract
 
-Move smart contract implementation of an endless vector data structure for the Sui blockchain. Provides a scalable `vector<vector<u8>>` that can grow beyond Sui's object size constraints through automatic data management across multiple storage tiers.
-
-## Overview
-
-The Endless Vector smart contract provides a scalable vector that can grow indefinitely through automatic data management across three storage tiers: current items, history table, and archive table. It efficiently handles large datasets while respecting Sui's object size limits.
-
-## Key Features
-
-- **Unlimited Growth**: Vector can grow beyond Sui's 250KB object size limit indefinitely
-- **Large Item Support**: Push items up to ~200KB each, or compose up to ~120KB per transaction
-- **Three-Tier Storage**: Automatic data management across current items, history table, and archive table
-- **Efficient Concatenation**: Merge multiple vectors by transferring ownership, not copying data
-- **Parallel Transaction Support**: Ready for parallel transactions to speed up data upload
-- **Storage Rebates**: Burn old archives to reclaim storage fees and reduce long-term costs
-- **Item Updates**: Update existing items in current storage tier
-- **Automatic Clamping**: Seamless data migration to history when approaching size limits
-- **Binary Search**: O(log n) lookups for historical data
+Move smart contract implementation for the Sui blockchain. Provides a scalable append-only structure that can grow beyond Sui's object size constraints through automatic data management across multiple storage tiers. Each item can hold either raw bytes or a [Walrus](https://walrus.xyz) blob reference. Optional [Seal](https://github.com/MystenLabs/seal) encryption is built in.
 
 ## Module
 
-`endless_vector::endless_vector`
+`endless_vector::endless_walrus`
+
+## Key Features
+
+- **Unlimited growth** — vector grows beyond Sui's object size limit through automatic history/archive tiers
+- **Blob support** — items can be raw bytes or Walrus blob references; blobs don't count against the object's size limit
+- **Seal encryption** — attach an AES key once; SDKs encrypt/decrypt every item transparently
+- **Blob lifetime management** — inspect minimum blob expiry and extend all blobs to a target epoch in one call
+- **Efficient concatenation** — merge vectors by transferring ownership, not copying data
+- **Storage rebates** — burn old archives to reclaim storage fees
+- **Binary search** — O(log n) lookups in history and archive tiers
+
+## Overview
+
+### Storage tiers
+
+1. **Items** — most-recent items stored directly on the object (`this_object_storage_volume` ≤ `SAFE_INNER_SIZE = 128 KB`)
+2. **History table** — older items clamped from the items vector when size limits are approached
+3. **Archive table** — history swept here via `archive()`; each archive is a separate on-chain object that can be burned independently
+
+### Item types (`EndlessWalrusItem`)
+
+Each item holds either:
+- **Bytes** — inline `vector<u8>`; counted fully in the object's storage volume
+- **Blob** — a `walrus::blob::Blob` handle (32-byte object reference); data lives in Walrus, only the reference counts (~32 bytes) against object size
 
 ## Quick Start
 
 ```move
-use endless_vector::endless_vector;
+use endless_vector::endless_walrus;
 
-// Create a new endless vector
-let mut ev = endless_vector::empty(ctx);
+// Create
+let mut ev = endless_walrus::empty(ctx);
 
-// Push data
-endless_vector::push_back(&mut ev, b"Hello");
-endless_vector::push_back(&mut ev, b"World");
+// Push bytes
+endless_walrus::push_back_bytes(&mut ev, b"Hello");
+endless_walrus::push_back_bytes(&mut ev, b"World");
 
-// Read data
-let item0 = endless_vector::get_at(&ev, 0);  // b"Hello"
-let item1 = endless_vector::get_at(&ev, 1);  // b"World"
+// Push a Walrus blob
+endless_walrus::push_back_blob(&mut ev, certified_blob);
 
-// Get metadata
-let len = endless_vector::length(&ev);      // 2
-let size = endless_vector::size(&ev);       // 10 (5 + 5 bytes)
+// Read bytes
+let bytes = endless_walrus::read_bytes_at(&ev, 0);  // b"Hello"
+
+// Metadata
+let len  = endless_walrus::length(&ev);  // 3
+let size = endless_walrus::size(&ev);    // total binary bytes
 ```
 
 ## Data Structures
 
-### EndlessVector
-
-The main data structure storing the vector and its metadata:
+### EndlessWalrusVector
 
 ```move
-public struct EndlessVector has key {
+public struct EndlessWalrusVector has key, store {
     id: UID,
-    items: vector<vector<u8>>,                      // Current items
-    first_item_is_from_previous_history: bool,      // First item continuation flag
+    items: vector<EndlessWalrusItem>,
+    first_item_is_from_previous_history: bool,
 
-    length: u64,                                    // Total items (never decreases)
-    binary_length: u64,                             // Total binary size
-    this_object_items_binary_length: u64,           // Size of current items
+    length: u64,                           // total item count (never decreases)
+    binary_length: u64,                    // total payload bytes (never decreases)
+    this_object_items_binary_length: u64,  // payload bytes in current items tier
+    this_object_storage_volume: u64,       // storage bytes in current items tier
 
-    history: Option<Table<u64, EndlessVectorHistory>>,  // History table
-    history_items_count: u64,                       // Number of history entries
+    history: Option<Table<u64, EndlessWalrusHistory>>,
+    history_items_count: u64,
 
-    archive: Table<u64, EndlessVectorArchive>,      // Archive table
-    archive_items_count: u64,                       // Number of archive entries
-    archived_at_length: u64,                        // Length when last archived
+    archive: Table<u64, EndlessWalrusArchive>,
+    archive_items_count: u64,
+    archived_at_length: u64,
 
-    archived_from_length: u64,                      // Start index after burns
-    burned_archive_count: u64,                      // Number of burned archives
+    archived_from_length: u64,
+    burned_archive_count: u64,
+
+    made_with_version: u64,
+    meta: vector<u8>,
+
+    seal_encrypted_key: Option<vector<u8>>,  // Seal-wrapped AES key; set once
 }
 ```
 
-### EndlessVectorHistory
-
-Stores historical items moved from the main vector:
+### EndlessWalrusHistory
 
 ```move
-public struct EndlessVectorHistory has store, drop {
-    items: vector<vector<u8>>,
-    followed_by_next_bytes: u64,                    // Bytes from next segment
-    first_item_is_from_previous_history: bool,      // Continuation flag
-    saved_at_length: u64,                           // Length when saved
+public struct EndlessWalrusHistory has store {
+    items: vector<EndlessWalrusItem>,
+    followed_by_next_bytes: u64,
+    first_item_is_from_previous_history: bool,
+    saved_at_length: u64,
+    storage_volume: u64,
 }
 ```
 
-### EndlessVectorArchive
-
-Archives older history entries for long-term storage:
+### EndlessWalrusArchive
 
 ```move
-public struct EndlessVectorArchive has store, key {
+public struct EndlessWalrusArchive has store, key {
     id: UID,
-    history: Table<u64, EndlessVectorHistory>,
-    archived_at_length: u64,                        // Length when archived
-    length: u64,                                    // Items in this archive
+    history: Table<u64, EndlessWalrusHistory>,
+    archived_at_length: u64,
+    length: u64,
 }
 ```
 
@@ -101,412 +112,374 @@ public struct EndlessVectorArchive has store, key {
 
 ### Creation
 
-#### `empty(ctx: &mut TxContext): EndlessVector`
+#### `empty(ctx): EndlessWalrusVector`
 
-Creates and returns a new empty EndlessVector.
-
-```move
-public fun empty(ctx: &mut TxContext): EndlessVector
-```
-
-**Returns:** A new EndlessVector instance
-
-**Example:**
-```move
-let ev = endless_vector::empty(ctx);
-transfer::transfer(ev, tx_context::sender(ctx));
-```
-
-#### `empty_entry(ctx: &mut TxContext)`
-
-Entry function that creates a new EndlessVector and transfers it to the sender.
+Creates and returns a new empty vector.
 
 ```move
-public entry fun empty_entry(ctx: &mut TxContext)
+public fun empty(ctx: &mut TxContext): EndlessWalrusVector
 ```
 
-**Example:**
-```move
-// Call from transaction
-endless_vector::empty_entry(ctx);
-```
+#### `empty_entry(ctx)`
 
-#### `empty_and_push(items_to_push: vector<vector<u8>>, ctx: &mut TxContext): EndlessVector`
-
-Creates a new EndlessVector and pushes multiple items to it in one operation.
+Entry function — creates a vector and transfers it to the sender.
 
 ```move
-public fun empty_and_push(items_to_push: vector<vector<u8>>, ctx: &mut TxContext): EndlessVector
+public fun empty_entry(ctx: &mut TxContext)
 ```
 
-**Parameters:**
-- `items_to_push` - Vector of byte vectors to push to the new EndlessVector
-- `ctx` - Transaction context
+#### `transfer_to_sender(endless_v, ctx)`
 
-**Returns:** A new EndlessVector with items pushed
-
-**Example:**
-```move
-let mut items = vector::empty<vector<u8>>();
-vector::push_back(&mut items, b"Item 1");
-vector::push_back(&mut items, b"Item 2");
-vector::push_back(&mut items, b"Item 3");
-
-let ev = endless_vector::empty_and_push(items, ctx);
-transfer::transfer(ev, tx_context::sender(ctx));
-```
-
-#### `empty_entry_and_push(items_to_push: vector<vector<u8>>, ctx: &mut TxContext)`
-
-Entry function wrapper that creates a new EndlessVector with initial items and transfers it to the sender.
+Transfers an existing vector to the transaction sender.
 
 ```move
-public entry fun empty_entry_and_push(items_to_push: vector<vector<u8>>, ctx: &mut TxContext)
+public fun transfer_to_sender(endless_v: EndlessWalrusVector, ctx: &mut TxContext)
 ```
 
-**Parameters:**
-- `items_to_push` - Vector of byte vectors to push to the new EndlessVector
-- `ctx` - Transaction context
+#### `empty_and_push(items_to_push, ctx): EndlessWalrusVector`
+
+Creates a vector and pushes multiple byte items.
+
+```move
+public fun empty_and_push(items_to_push: vector<vector<u8>>, ctx: &mut TxContext): EndlessWalrusVector
+```
+
+#### `empty_entry_and_push(items_to_push, ctx)`
+
+Entry function wrapper around `empty_and_push`; transfers the result to the sender.
+
+```move
+public fun empty_entry_and_push(items_to_push: vector<vector<u8>>, ctx: &mut TxContext)
+```
+
+### Seal
+
+#### `set_seal_encrypted_key(ev, key)`
+
+Attaches a Seal-encrypted AES key to the vector. Can only be called once. After this, SDKs treat every item as encrypted.
+
+```move
+public fun set_seal_encrypted_key(ev: &mut EndlessWalrusVector, key: vector<u8>)
+```
+
+**Aborts:** `ESealKeyAlreadySet` (103) if called a second time.
+
+#### `seal_encrypted_key(ev): &Option<vector<u8>>`
+
+Borrows the Seal-encrypted AES key (or `none` if unencrypted).
+
+```move
+public fun seal_encrypted_key(ev: &EndlessWalrusVector): &Option<vector<u8>>
+```
+
+#### `is_sealed(ev): bool`
+
+Returns `true` if the vector has a Seal key attached.
+
+```move
+public fun is_sealed(ev: &EndlessWalrusVector): bool
+```
+
+#### `seal_approve_endless_vector_owner(id, ev, ctx)`
+
+Seal access policy. Approves decryption iff the PTB sender owns the vector. The `id` is the vector's 32-byte object address. Called internally by Seal; not meant for direct invocation.
+
+```move
+public fun seal_approve_endless_vector_owner(id: vector<u8>, ev: &EndlessWalrusVector, _ctx: &TxContext)
+```
+
+**Aborts:** `EIdMismatch` (102) if `id` does not match the vector's UID.
 
 ### Reading
 
-#### `length(endless_v: &EndlessVector): u64`
+#### `length(ev): u64`
 
-Returns the total number of items in the vector (including history and archive).
-
-```move
-public fun length(endless_v: &EndlessVector): u64
-```
-
-**Returns:** Total number of items
-
-#### `size(endless_v: &EndlessVector): u64`
-
-Returns the total binary size of all items in bytes.
+Total item count (includes history and archive; never decreases).
 
 ```move
-public fun size(endless_v: &EndlessVector): u64
+public fun length(endless_v: &EndlessWalrusVector): u64
 ```
 
-**Returns:** Total binary length in bytes
+#### `size(ev): u64`
 
-#### `has_items_from(endless_v: &EndlessVector): u64`
-
-Returns the starting index (offset by burned archives).
+Total payload bytes across all tiers (never decreases).
 
 ```move
-public fun has_items_from(endless_v: &EndlessVector): u64
+public fun size(endless_v: &EndlessWalrusVector): u64
 ```
 
-**Returns:** Starting index after burned archives
+#### `has_items_from(ev): u64`
 
-#### `get_at(endless_v: &EndlessVector, i: u64): vector<u8>`
-
-Retrieves an item at the specified index. Automatically searches across all storage tiers.
+Starting index after burned archives (`archived_from_length`).
 
 ```move
-public fun get_at(endless_v: &EndlessVector, i: u64): vector<u8>
+public fun has_items_from(endless_v: &EndlessWalrusVector): u64
 ```
 
-**Parameters:**
-- `i` - Zero-based index of the item to retrieve
+#### `history_items_count(ev): u64`
 
-**Returns:** The byte vector at the specified index
+Number of history segments in the current object.
 
-**Aborts:**
-- If index is out of bounds
-- If archive has been burned (with `EArchiveHasBeenBurned`)
-
-**Example:**
 ```move
-let item = endless_vector::get_at(&ev, 0);
-assert!(item == b"Hello", 0);
+public fun history_items_count(endless_v: &EndlessWalrusVector): u64
 ```
+
+#### `archive_items_count(ev): u64`
+
+Total archive entries created.
+
+```move
+public fun archive_items_count(endless_v: &EndlessWalrusVector): u64
+```
+
+#### `get_at(ev, i): &EndlessWalrusItem`
+
+Returns a reference to the item at logical index `i`. For split items, returns the head fragment.
+
+```move
+public fun get_at(endless_v: &EndlessWalrusVector, i: u64): &EndlessWalrusItem
+```
+
+**Aborts:** `EArchiveHasBeenBurned` (92) if the index falls in a burned range.
+
+#### `read_bytes_at(ev, i): vector<u8>`
+
+Returns the full bytes at index `i`, reassembling split fragments.
+
+```move
+public fun read_bytes_at(endless_v: &EndlessWalrusVector, i: u64): vector<u8>
+```
+
+**Aborts:** `ENotABytesItem` (100) if the item is a Blob.
+
+#### `borrow_blob_at(ev, i): &Blob`
+
+Borrows the Walrus blob at index `i`.
+
+```move
+public fun borrow_blob_at(endless_v: &EndlessWalrusVector, i: u64): &Blob
+```
+
+**Aborts:** `ENotABlobItem` (101) if the item is not a Blob.
 
 ### Writing
 
-#### `push_back(endless_v: &mut EndlessVector, bytes: vector<u8>)`
+#### `push_back(ev, item)`
 
-Pushes a new byte vector to the end. Automatically triggers clamping if size limits are approached.
+Appends an `EndlessWalrusItem`. Triggers clamping automatically if `this_object_storage_volume` would exceed `SAFE_INNER_SIZE`.
 
 ```move
-public fun push_back(endless_v: &mut EndlessVector, bytes: vector<u8>)
+public fun push_back(endless_v: &mut EndlessWalrusVector, new_item: EndlessWalrusItem)
 ```
 
-**Parameters:**
-- `endless_v` - Mutable reference to the EndlessVector
-- `bytes` - Byte vector to push
+**Aborts:** `EChunkIsTooLarge` (91) if a single item's storage volume exceeds `SAFE_INNER_SIZE`.
 
-**Constraints:**
-- Maximum chunk size: ~200KB (`SAFE_INNER_SIZE`)
-- Aborts with `EChunkIsTooLarge` if exceeded
+#### `push_back_bytes(ev, bytes)`
 
-**Example:**
+Convenience wrapper — creates a bytes item and calls `push_back`.
+
 ```move
-endless_vector::push_back(&mut ev, b"New item");
+public fun push_back_bytes(endless_v: &mut EndlessWalrusVector, bytes: vector<u8>)
 ```
 
-#### `compose_and_push_back(endless_v: &mut EndlessVector, bytes1-10: vector<u8>)`
+#### `push_back_blob(ev, blob)`
 
-Pushes large data by composing up to 10 chunks. Workaround for Sui's argument size limits.
+Appends a Walrus blob item. The blob reference counts ~32 bytes against object size; data lives in Walrus.
+
+```move
+public fun push_back_blob(endless_v: &mut EndlessWalrusVector, blob: Blob)
+```
+
+#### `compose_and_push_back(ev, bytes1..bytes10)`
+
+Pushes up to 10 chunks as one item. Workaround for Sui's `max_pure_argument_size` (~12 KB per argument).
 
 ```move
 public fun compose_and_push_back(
-    endless_v: &mut EndlessVector,
-    bytes1: vector<u8>, bytes2: vector<u8>, bytes3: vector<u8>,
-    bytes4: vector<u8>, bytes5: vector<u8>, bytes6: vector<u8>,
-    bytes7: vector<u8>, bytes8: vector<u8>, bytes9: vector<u8>,
-    bytes10: vector<u8>
+    endless_v: &mut EndlessWalrusVector,
+    bytes1: vector<u8>, bytes2: vector<u8>, ..., bytes10: vector<u8>
 )
 ```
 
-**Purpose:** Sui has a `max_pure_argument_size` of ~16KB, so each argument can be ~12KB. This function allows pushing up to 10 × 12KB = ~120KB per transaction.
+**Purpose:** 10 × 12 KB = ~120 KB per transaction, covering the full `max_tx_size_bytes` (128 KB, base64-encoded).
 
-**Parameters:**
-- `endless_v` - Mutable reference to the EndlessVector
-- `bytes1` to `bytes10` - Up to 10 byte vectors to compose and push (empty vectors are ignored)
+#### `update_at(ev, i, new_item)`
 
-**Example:**
-```move
-let chunk1 = vector::empty<u8>();
-let chunk2 = vector::empty<u8>();
-// ... fill chunks with data ...
-
-endless_vector::compose_and_push_back(
-    &mut ev, chunk1, chunk2, chunk3, chunk4, chunk5,
-    chunk6, chunk7, chunk8, chunk9, chunk10
-);
-```
-
-#### `update_at(endless_v: &mut EndlessVector, i: u64, new_bytes: vector<u8>)`
-
-Updates an existing item at the specified index.
+Replaces the item at index `i`. Burns the old item. Can update items in both the current tier and history.
 
 ```move
-public fun update_at(endless_v: &mut EndlessVector, i: u64, new_bytes: vector<u8>)
+public fun update_at(endless_v: &mut EndlessWalrusVector, i: u64, new_item: EndlessWalrusItem)
 ```
-
-**Parameters:**
-- `endless_v` - Mutable reference to the EndlessVector
-- `i` - Zero-based index of the item to update
-- `new_bytes` - New byte vector to replace the existing item
-
-**Constraints:**
-- New item size cannot exceed `SAFE_INNER_SIZE` (~200KB)
-- Can only update items in current storage (not in history or archive)
 
 **Aborts:**
-- `EChunkIsTooLarge` if new item is too large
-- `EUpdateIndexOutOfBounds` if index is out of bounds
-- `EUpdateIndexIsInHistory` if trying to update historical item
+- `EIndexOutOfBounds` (96) — index ≥ length
+- `ECannotUpdateArchivedItem` (93) — index is in the archived range
+- `ESizeExceedsLimit` (94) — replacement would exceed tier's size limit
+- `ECannotUpdateSplitItem` (95) — item straddles a history boundary
 
-**Example:**
+#### `update_bytes_at(ev, i, bytes)`
+
+Convenience wrapper — creates a bytes item and calls `update_at`.
+
 ```move
-endless_vector::update_at(&mut ev, 0, b"Updated item");
+public fun update_bytes_at(endless_v: &mut EndlessWalrusVector, i: u64, bytes: vector<u8>)
 ```
 
 ### Concatenation
 
-#### `concat(endless_v: &mut EndlessVector, other: EndlessVector)`
+#### `concat(ev, other)`
 
-Concatenates another EndlessVector into this one by transferring ownership of internal structures. The other vector is consumed (destroyed) in the process.
+Appends all items from `other` by transferring ownership. `other` is consumed (destroyed).
 
 ```move
-public fun concat(endless_v: &mut EndlessVector, other: EndlessVector)
+public fun concat(endless_v: &mut EndlessWalrusVector, other: EndlessWalrusVector)
 ```
-
-**Parameters:**
-- `endless_v` - The target EndlessVector to append to
-- `other` - The EndlessVector to concatenate (will be consumed)
 
 **Restrictions:**
-- Cannot concatenate vectors that have archived items (aborts with `ECannotConcatWithArchivedItems`)
+- Neither vector may have archived items (`ECannotConcatWithArchivedItems` 97)
+- Neither vector may be Seal-encrypted (`ECannotConcatSealedVector` 104) — re-encrypting under one key is not supported
 
-**Behavior:**
-- Efficiently transfers all items, history, and metadata from `other` to `endless_v`
-- No item-by-item copying (transfers ownership)
-- Properly handles continuation flags across vector boundaries
-- All items from `other` are appended to `endless_v` in order
+**Behavior:** transfers history items and current items directly without item-by-item copying; adjusts `saved_at_length` offsets accordingly.
 
-**Example:**
-```move
-let mut ev1 = endless_vector::empty(ctx);
-endless_vector::push_back(&mut ev1, b"Item 1");
+#### `append(ev, others)`
 
-let mut ev2 = endless_vector::empty(ctx);
-endless_vector::push_back(&mut ev2, b"Item 2");
-
-endless_vector::concat(&mut ev1, ev2);
-// ev1 now contains both items, ev2 is destroyed
-```
-
-#### `append(endless_v: &mut EndlessVector, others: vector<EndlessVector>)`
-
-Concatenates multiple EndlessVectors into this one. Processes vectors in order.
+Concatenates multiple vectors into `ev` by calling `concat` in order. All vectors in `others` are consumed.
 
 ```move
-public fun append(endless_v: &mut EndlessVector, others: vector<EndlessVector>)
+public fun append(endless_v: &mut EndlessWalrusVector, others: vector<EndlessWalrusVector>)
 ```
 
-**Parameters:**
-- `endless_v` - The target EndlessVector to append to
-- `others` - Vector of EndlessVectors to concatenate (all will be consumed)
+### Archive Management
 
-**Example:**
-```move
-let mut ev1 = endless_vector::empty(ctx);
-let ev2 = endless_vector::empty(ctx);
-let ev3 = endless_vector::empty(ctx);
+#### `archive(ev, ctx)`
 
-let mut others = vector::empty<EndlessVector>();
-vector::push_back(&mut others, ev2);
-vector::push_back(&mut others, ev3);
-
-endless_vector::append(&mut ev1, others);
-// ev1 now contains all items from ev1, ev2, and ev3
-```
-
-### Archive Management & Storage Rebates
-
-The EndlessVector provides built-in storage management to optimize costs over time. As vectors grow, older data can be archived and eventually burned to reclaim storage rebates.
-
-#### Storage Management Strategy
-
-1. **Active Usage Phase**: New items are pushed and stored in the current items vector
-2. **History Phase**: When size limits are approached, items are automatically moved to history table
-3. **Archive Phase**: Call `archive()` to move all history to a separate archive object
-4. **Burn Phase**: Call `burn_archive()` to permanently delete the oldest archive and reclaim storage rebate
-
-#### `archive(endless_v: &mut EndlessVector, ctx: &mut TxContext)`
-
-Moves all history items to a new archive. Creates a new archive entry and resets the history table.
+Moves all history into a new archive entry (a separate on-chain object). Resets the history table.
 
 ```move
-public fun archive(endless_v: &mut EndlessVector, ctx: &mut TxContext)
+public fun archive(endless_v: &mut EndlessWalrusVector, ctx: &mut TxContext)
 ```
 
-**Use case:** When history grows too large (e.g., reaches thousands of entries), archive it to:
-- Maintain optimal performance for recent data access
-- Prepare old data for eventual burning and storage rebate recovery
-- Separate active data from historical data
+#### `burn_archive(ev)`
 
-**Example:**
-```move
-endless_vector::archive(&mut ev, ctx);
-```
-
-#### `burn_archive(endless_v: &mut EndlessVector)`
-
-Permanently deletes the oldest archive and recovers storage rebate. Updates `archived_from_length` and `burned_archive_count`.
+Permanently deletes the oldest archive entry and recovers its storage rebate. Advances `archived_from_length`.
 
 ```move
-public fun burn_archive(endless_v: &mut EndlessVector)
-```
-**Warning:** This is irreversible. Old data will be permanently lost and cannot be retrieved.
-
-**Use case:**
-- Reclaim storage fees for old data you no longer need
-- Implement data retention policies (e.g., keep only last 6 months of data)
-- Reduce ongoing storage costs for perpetually growing datasets
-
-**Example:**
-```move
-endless_vector::burn_archive(&mut ev);
+public fun burn_archive(endless_v: &mut EndlessWalrusVector)
 ```
 
-#### `flush(endless_v: &mut EndlessVector)`
+**Warning:** irreversible — items in the burned range are gone permanently.
 
-Clears all data from the vector, including history and archives. Resets all counters to zero.
+#### `flush(ev)`
+
+Clears all data (items, history, archives) and resets all counters to zero. The vector object itself is retained.
 
 ```move
-public fun flush(endless_v: &mut EndlessVector)
+public fun flush(endless_v: &mut EndlessWalrusVector)
 ```
 
-**Warning:** This is irreversible and deletes all data.
+**Warning:** irreversible.
 
-**Example:**
+#### `burn(ev)`
+
+Calls `flush` then destroys the vector object entirely, deleting its UID.
+
 ```move
-endless_vector::flush(&mut ev);
+public fun burn(endless_v: EndlessWalrusVector)
 ```
+
+### Walrus Blob Lifetime
+
+#### `min_blob_end_epoch(ev): Option<u32>`
+
+Returns the earliest `end_epoch` across all blobs in the vector (items + history + non-burned archives). Returns `none` if there are no blobs.
+
+```move
+public fun min_blob_end_epoch(endless_v: &EndlessWalrusVector): Option<u32>
+```
+
+#### `extend_blobs_to_epoch(ev, walrus_system, target_end_epoch, payment)`
+
+Extends every blob whose `end_epoch < target_end_epoch` up to `target_end_epoch`. Skips blobs already valid through the target and expired blobs (which Walrus cannot extend). Covers items, history, and non-burned archives.
+
+```move
+public fun extend_blobs_to_epoch(
+    endless_v: &mut EndlessWalrusVector,
+    walrus_system: &mut System,
+    target_end_epoch: u32,
+    payment: &mut Coin<WAL>,
+)
+```
+
+#### `extend_blobs_to_epoch_entry(ev, walrus_system, target_end_epoch, payment)`
+
+Entry function wrapper around `extend_blobs_to_epoch`.
+
+```move
+public entry fun extend_blobs_to_epoch_entry(
+    endless_v: &mut EndlessWalrusVector,
+    walrus_system: &mut System,
+    target_end_epoch: u32,
+    payment: &mut Coin<WAL>,
+)
+```
+
+#### `extend_blobs_cost_to_epoch(ev, walrus_system, target_end_epoch, price_per_unit): u64`
+
+Returns the total WAL cost (in FROST) to extend all blobs to `target_end_epoch`. Designed for off-chain simulation (`devInspect`) to determine the exact payment amount before calling `extend_blobs_to_epoch`.
+
+```move
+public fun extend_blobs_cost_to_epoch(
+    endless_v: &EndlessWalrusVector,
+    walrus_system: &System,
+    target_end_epoch: u32,
+    price_per_unit: u64,
+): u64
+```
+
+`price_per_unit` is the system's `storage_price_per_unit_size` (read from `WalrusClient.systemState` off-chain, since the on-chain getter is test-only).
 
 ## Constants
 
 ```move
-const SAFE_INNER_SIZE: u64 = 200*1024;  // 200KB safe size for inner storage
+const SAFE_INNER_SIZE: u64 = 128 * 1024;  // 128 KB
 ```
 
-**Rationale:**
-- Sui's `max_move_object_size` is 250KB
-- Sui's `max_tx_size_bytes` is 128KB
-- Safe inner size is 200KB to respect both limits with overhead
-- Allows pushing items up to ~200KB each
+Controls the maximum `this_object_storage_volume`. When a push would exceed this, the current items are clamped to history automatically.
 
 ## Error Codes
 
 ```move
-const EChunkIsTooLarge: u64 = 91;                    // Chunk exceeds SAFE_INNER_SIZE
-const EArchiveHasBeenBurned: u64 = 92;               // Attempted access to burned archive
-const EUpdateIndexOutOfBounds: u64 = 93;             // Update index out of bounds
-const EUpdateSizeExceedsLimit: u64 = 94;             // Updated item exceeds size limit
-const EUpdateIndexIsInHistory: u64 = 95;             // Cannot update historical items
-const EUpdateItemsVectorIsEmpty: u64 = 96;           // Items vector is empty
-const ECannotConcatWithArchivedItems: u64 = 97;      // Cannot concat with archived items
+const EChunkIsTooLarge: u64 = 91;               // Single item storage volume exceeds SAFE_INNER_SIZE
+const EArchiveHasBeenBurned: u64 = 92;          // Attempted access to a burned archive range
+const ECannotUpdateArchivedItem: u64 = 93;      // Tried to update an item in the archived range
+const ESizeExceedsLimit: u64 = 94;              // Replacement would exceed tier's storage limit
+const ECannotUpdateSplitItem: u64 = 95;         // Item straddles a history boundary
+const EIndexOutOfBounds: u64 = 96;              // Index ≥ length
+const ECannotConcatWithArchivedItems: u64 = 97; // Concat source has archived items
+const ENotABytesItem: u64 = 100;                // Expected bytes item, got blob or empty
+const ENotABlobItem: u64 = 101;                 // Expected blob item, got bytes or empty
+const EIdMismatch: u64 = 102;                   // Seal approval: id does not match vector UID
+const ESealKeyAlreadySet: u64 = 103;            // set_seal_encrypted_key called twice
+const ECannotConcatSealedVector: u64 = 104;     // Cannot concat Seal-encrypted vectors
 ```
 
 ## Storage Architecture
 
-The contract uses a three-tier storage system to overcome Sui's object size constraints:
+### Tier 1: Items vector
 
-### Tier 1: Items Vector
-- Most recent data stored directly in `items: vector<vector<u8>>`
-- Fast access, limited by object size constraints
-- When approaching `SAFE_INNER_SIZE`, data is "clamped" to history
+Stores the most-recent items directly on the `EndlessWalrusVector` object. Capped at `SAFE_INNER_SIZE` (128 KB) measured by `this_object_storage_volume`. Blob items contribute only ~32 bytes each regardless of payload size.
 
-### Tier 2: History Table
-- Older data moved from items vector
-- Stored in `history: Option<Table<u64, EndlessVectorHistory>>`
-- Uses binary search for efficient lookups
-- Multiple history segments with continuation flags for items split across boundaries
+### Tier 2: History table (`Option<Table<u64, EndlessWalrusHistory>>`)
 
-### Tier 3: Archive Table
-- Historical data archived for long-term storage
-- Stored in `archive: Table<u64, EndlessVectorArchive>`
-- Each archive contains a snapshot of the history table
-- Can be burned (deleted) to manage storage costs
+When a push would exceed the tier 1 limit, `clamp()` drains the current items into a new `EndlessWalrusHistory` segment with index `history_items_count`. Binary search over `saved_at_length` locates the correct segment in O(log n).
 
-## Internal Mechanisms
+### Tier 3: Archive table (`Table<u64, EndlessWalrusArchive>`)
 
-### Clamping
+Calling `archive()` sweeps the entire history table into a new `EndlessWalrusArchive` child object, freeing the history table for new segments. Archives are indexed by `archive_items_count`. Calling `burn_archive()` deletes the oldest archive and returns its storage rebate.
 
-When `push_back` would exceed `SAFE_INNER_SIZE`, the `clamp` function:
-1. Moves current items to a new history entry
-2. Handles item splitting if the last item spans boundaries
-3. Updates counters and flags
-4. Clears the items vector for new data
+### Item splitting
 
-### Item Splitting
-
-Large items that would be split across storage boundaries are handled through:
-- `followed_by_next_bytes`: Tracks continuation size
-- `first_item_is_from_previous_history`: Marks continuation items
-- Automatic reassembly during `get_at`
-
-This ensures seamless access to large items regardless of storage boundaries.
-
-### Binary Search
-
-The contract uses binary search to efficiently locate items in history:
-- Searches by `saved_at_length` field
-- O(log n) complexity for history lookups
-- Handles both archived and current history
-
-### Concatenation Implementation
-
-The `concat` function efficiently merges vectors:
-- Transfers ownership of history items and internal structures
-- Uses direct `vector::push_back` to avoid double-counting
-- Properly adjusts `saved_at_length` values in transferred history items
-- Handles continuation flags across vector boundaries
+When a bytes item is too large to fit entirely in the remaining space of a history segment, `clamp()` splits it: the head fragment stays as the last item of the closing segment (`followed_by_next_bytes` records the tail size) and the tail becomes the first item of the new tier 1 (`first_item_is_from_previous_history = true`). `read_bytes_at()` reassembles the full item transparently.
 
 ## Building
 
@@ -514,107 +487,13 @@ The `concat` function efficiently merges vectors:
 sui move build
 ```
 
-Build with unpublished dependencies:
-```bash
-sui move build --with-unpublished-dependencies
-```
-
 ## Testing
 
-The contract includes comprehensive unit tests using the Sui test framework:
-With custom gas limit for complex tests:
 ```bash
 sui move test --gas-limit=9999999999999999
 ```
 
-Tests cover:
-- Basic push and get operations
-- Large data handling (30KB, 99KB items)
-- Concatenation of multiple vectors
-- Archive and burn operations
-- Item updates
-- Edge cases and error conditions
-
-Tests are marked with `#[test]` and use:
-- `sui::test_scenario` for transaction simulation
-- `std::debug` for debugging output
-
-## Usage Examples
-
-### Basic Operations
-
-```move
-use endless_vector::endless_vector;
-
-// Create and populate
-let mut ev = endless_vector::empty(ctx);
-endless_vector::push_back(&mut ev, b"Hello");
-endless_vector::push_back(&mut ev, b"World");
-
-// Read data
-let item0 = endless_vector::get_at(&ev, 0);  // b"Hello"
-let len = endless_vector::length(&ev);       // 2
-```
-
-### Creating with Initial Data
-
-```move
-let mut items = vector::empty<vector<u8>>();
-vector::push_back(&mut items, b"Item 1");
-vector::push_back(&mut items, b"Item 2");
-vector::push_back(&mut items, b"Item 3");
-
-let ev = endless_vector::empty_and_push(items, ctx);
-```
-
-### Concatenating Vectors
-
-```move
-// Create multiple vectors
-let mut ev1 = endless_vector::empty(ctx);
-endless_vector::push_back(&mut ev1, b"Vector 1 - Item 1");
-endless_vector::push_back(&mut ev1, b"Vector 1 - Item 2");
-
-let mut ev2 = endless_vector::empty(ctx);
-endless_vector::push_back(&mut ev2, b"Vector 2 - Item 1");
-endless_vector::push_back(&mut ev2, b"Vector 2 - Item 2");
-
-let mut ev3 = endless_vector::empty(ctx);
-endless_vector::push_back(&mut ev3, b"Vector 3 - Item 1");
-
-// Concat single vector
-endless_vector::concat(&mut ev1, ev2);
-
-// Or append multiple at once
-let mut others = vector::empty<EndlessVector>();
-vector::push_back(&mut others, ev3);
-endless_vector::append(&mut ev1, others);
-
-// ev1 now contains all 5 items
-```
-
-### Updating Items
-
-```move
-let mut ev = endless_vector::empty(ctx);
-endless_vector::push_back(&mut ev, b"Original");
-
-// Update the item
-endless_vector::update_at(&mut ev, 0, b"Updated");
-
-let item = endless_vector::get_at(&ev, 0);
-assert!(item == b"Updated", 0);
-```
-
-### Archive Management
-
-```move
-// After many pushes, archive old data
-endless_vector::archive(&mut ev, ctx);
-
-// Later, burn old archives to save storage
-endless_vector::burn_archive(&mut ev);
-```
+Tests cover: basic push/get, large items, blobs, concat/append, archive and burn, update (in items and history), Seal encryption, Walrus blob extend.
 
 ## License
 
