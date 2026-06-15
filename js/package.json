@@ -1,7 +1,7 @@
 {
     "name": "@fizzyflow/endless-vector",
-    "version": "0.0.9",
-    "description": "",
+    "version": "0.0.11",
+    "description": "Scalable append-only on-chain vector for Sui with Walrus blob offloading and Seal encryption",
     "type": "module",
     "main": "./index.js",
     "types": "./index.d.ts",
@@ -23,7 +23,7 @@
         "access": "public"
     },
     "author": "suidouble (https://github.com/suidouble)",
-    "license": "Apache-2.0",
+    "license": "AGPL-3.0",
     "scripts": {
         "test": "vitest run ./test/*.test.js",
         "test:walrus-blobs": "vitest run ./test/walrus_blobs.test.js",

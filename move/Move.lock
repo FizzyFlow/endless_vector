@@ -11,7 +11,7 @@ manifest_digest = "C4FE4C91DE74CBF223B2E380AE40F592177D21870DC2D7EB6227D2D694E05
 deps = {}
 
 [pinned.mainnet.MoveStdlib_1]
-source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/move-stdlib", rev = "85b460a63fd76a15672bbe4820bde6db78a3cfb8" }
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/move-stdlib", rev = "2f5992f189cd24445cd010ccf0aa7ff418ff93b1" }
 use_environment = "mainnet"
 manifest_digest = "C4FE4C91DE74CBF223B2E380AE40F592177D21870DC2D7EB6227D2D694E05363"
 deps = {}
@@ -23,27 +23,27 @@ manifest_digest = "CD547CB1ACCE0880C835DAED2D8FFCB91D56C833AE5240D3AA5B918398263
 deps = { MoveStdlib = "MoveStdlib" }
 
 [pinned.mainnet.Sui_1]
-source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "85b460a63fd76a15672bbe4820bde6db78a3cfb8" }
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "2f5992f189cd24445cd010ccf0aa7ff418ff93b1" }
 use_environment = "mainnet"
 manifest_digest = "CD547CB1ACCE0880C835DAED2D8FFCB91D56C833AE5240D3AA5B918398263195"
 deps = { MoveStdlib = "MoveStdlib_1" }
 
 [pinned.mainnet.WAL]
-source = { local = "../../seal_walrus_localnet/mysten_contracts_forks/original_walrus_contracts/wal" }
+source = { local = "../../seal_walrus_localnet/mysten_contracts_forks/walrus_contracts/wal" }
 use_environment = "mainnet"
-manifest_digest = "70EA0740ABAAB99CA60A51E5A6FC188348665DF9C3AF9CEFE74A38F7F3FA9204"
+manifest_digest = "F5222CDA0280E9DBA9D044F73611210C0DB365819973967320E3C5309A561EF7"
 deps = { Sui = "Sui_1" }
 
 [pinned.mainnet.Walrus]
-source = { local = "../../seal_walrus_localnet/mysten_contracts_forks/original_walrus_contracts/walrus" }
+source = { local = "../../seal_walrus_localnet/mysten_contracts_forks/walrus_contracts/walrus" }
 use_environment = "mainnet"
-manifest_digest = "12DD0B5FBFA817711F6B89A9C09D43F535976688CF3420B700F62483579675CB"
+manifest_digest = "9BA69733B6115A215ACECD96B2DA496B2295F3C3E9DD5790D52D1E50C68AC276"
 deps = { Sui = "Sui_1", WAL = "WAL" }
 
 [pinned.mainnet.endless_vector]
 source = { root = true }
 use_environment = "mainnet"
-manifest_digest = "D793B1176B25DBB7DDD56DBB408E0DDE07F45650EAB0B1211148AB3CDF5BC678"
+manifest_digest = "B0C7A0DD1B815C69F3C45E76F553964BB0A1394208847F95E622B53AEE063E03"
 deps = { WAL = "WAL", Walrus = "Walrus", std = "MoveStdlib", sui = "Sui" }
 
 [pinned.testnet.MoveStdlib]

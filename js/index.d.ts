@@ -55,7 +55,7 @@ export interface EndlessVectorCreateParams {
     options?: {
         /** Transaction confirmation timeout in ms, default 30000 */
         timeout?: number;
-        /** Poll interval in ms, default 1000 */
+        /** Poll interval in ms, default 200 */
         pollIntervalMs?: number;
     };
     /** Walrus SDK client for blob reads and writes */
@@ -88,7 +88,7 @@ export interface GetCreateTransactionParams {
 export interface TransactionOptions {
     /** wait for transaction confirmation timeout in ms, default 30000 */
     timeout?: number;
-    /** wait for transaction confirmation poll interval in ms, default 1000 */
+    /** wait for transaction confirmation poll interval in ms, default 200 */
     pollIntervalMs?: number;
 }
 

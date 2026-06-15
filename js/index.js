@@ -3,6 +3,7 @@ import EndlessVectorArchive from "./EndlessVectorArchive.js";
 import EndlessVectorHistory from "./EndlessVectorHistory.js";
 import EndlessVectorItem from "./EndlessVectorItem.js";
 import EndlessVectorWalrus from "./EndlessVectorWalrus.js";
+import EndlessVectorSeal from "./EndlessVectorSeal.js";
 
 export {
     EndlessVector as default,
@@ -11,4 +12,5 @@ export {
     EndlessVectorHistory,
     EndlessVectorItem,
     EndlessVectorWalrus,
+    EndlessVectorSeal,
 };
