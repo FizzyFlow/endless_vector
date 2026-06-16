@@ -136,15 +136,20 @@ await ev.push(new Uint8Array([1, 2, 3]));
 await ev.push([chunk1, chunk2, chunk3]); // multiple items
 ```
 
-### getPushTransaction(arr, tx?)
+### getPushTransaction(arr, tx?, expectedLength?)
 
 Returns a `Transaction` without executing it. Useful for batching multiple pushes.
+
+If `expectedLength` is provided, an `ensure_length` check is prepended as the first PTB command — the whole transaction aborts atomically if the vector's current on-chain length doesn't match. This prevents duplicate pushes after a timeout-retry and blocks concurrent writers. `push()` passes `this.length` automatically; pass it explicitly when building PTBs manually.
 
 ```javascript
 const tx = new Transaction();
 ev.getPushTransaction(data1, tx);
 ev.getPushTransaction(data2, tx);
 await signAndExecuteTransaction(tx);
+
+// with consistency guard:
+const tx2 = ev.getPushTransaction(data, null, ev.length);
 ```
 
 ### at(index)

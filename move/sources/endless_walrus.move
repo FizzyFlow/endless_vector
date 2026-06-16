@@ -26,6 +26,7 @@ module endless_vector::endless_walrus {
     const ECannotUpdateSplitItem: u64 = 95;
     const EIndexOutOfBounds: u64 = 96;
     const ECannotConcatWithArchivedItems: u64 = 97;
+    const EUnexpectedLength: u64 = 98;
     const ENotABytesItem: u64 = 100;
     const ENotABlobItem: u64 = 101;
     const EIdMismatch: u64 = 102;
@@ -341,6 +342,14 @@ module endless_vector::endless_walrus {
 
     public fun size(endless_v: &EndlessWalrusVector): u64 {
         endless_v.binary_length
+    }
+
+    /// Assert that the vector's current length equals `expected`.
+    /// Place this as the first command in a PTB before push_back so the entire
+    /// transaction aborts atomically if a concurrent or already-landed push has
+    /// changed the length. Takes an immutable borrow — no state is modified.
+    public fun ensure_length(endless_v: &EndlessWalrusVector, expected: u64) {
+        assert!(endless_v.length == expected, EUnexpectedLength);
     }
 
     public fun has_items_from(endless_v: &EndlessWalrusVector): u64 {

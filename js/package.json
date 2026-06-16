@@ -1,6 +1,6 @@
 {
     "name": "@fizzyflow/endless-vector",
-    "version": "0.0.11",
+    "version": "0.0.12",
     "description": "Scalable append-only on-chain vector for Sui with Walrus blob offloading and Seal encryption",
     "type": "module",
     "main": "./index.js",
@@ -31,6 +31,7 @@
         "test:walrus-blobs-history": "vitest run --config vitest.config.js ./test/walrus_blobs_history.test.js",
         "test:walrus-blobs-extend": "vitest run --config vitest.config.js ./test/walrus_blobs_extend.test.js",
         "test:base": "vitest run ./test/base.test.js",
+        "test:ensure-length": "vitest run --config vitest.config.js ./test/ensure_length.test.js",
         "test:seal": "vitest run --config vitest.config.js ./test/seal.test.js"
     },
     "peerDependencies": {

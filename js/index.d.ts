@@ -203,7 +203,12 @@ declare class EndlessVectorWalrus {
         timeout?: number;
         pollIntervalMs?: number;
     }): Promise<number | null>;
-    getPushBlobTransaction(blobObjectId: string, txToAppendTo?: Transaction | null): Transaction;
+    /**
+     * Build a push-blob transaction. If `expectedLength` is provided, prepends an on-chain
+     * `ensure_length` check. A failed check aborts the Sui transaction but the blob is already
+     * in Walrus — it will be orphaned (wasted storage) rather than double-appended.
+     */
+    getPushBlobTransaction(blobObjectId: string, txToAppendTo?: Transaction | null, expectedLength?: number | null): Transaction;
     pushBlob(data: Uint8Array, params?: {
         epochs?: number;
         deletable?: boolean;
@@ -346,7 +351,12 @@ declare class EndlessVector {
     at(i: number): Promise<Uint8Array>;
     getSuffixFromHistoryItemOfIndex(i: number): Promise<Uint8Array | undefined>;
 
-    getPushTransaction(arr: Uint8Array | Uint8Array[], txToAppendTo?: Transaction | null): Transaction;
+    /**
+     * Build a push transaction. If `expectedLength` is provided, prepends an on-chain
+     * `ensure_length` check — the whole PTB aborts atomically if the vector's current
+     * length does not match, preventing duplicate pushes on retry and catching concurrent writers.
+     */
+    getPushTransaction(arr: Uint8Array | Uint8Array[], txToAppendTo?: Transaction | null, expectedLength?: number | null): Transaction;
     push(arr: Uint8Array | Uint8Array[], params?: TransactionOptions): Promise<boolean>;
 
     getConcatTransaction(

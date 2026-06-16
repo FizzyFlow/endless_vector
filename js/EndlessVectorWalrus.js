@@ -347,25 +347,36 @@ export default class EndlessVectorWalrus {
     }
 
     /**
-     * Creates a transaction to push a pre-existing on-chain Blob object into this vector.
-     * Use this when you already have a certified Blob object ID.
+     * Build a push-blob transaction. If `expectedLength` is provided, prepends an on-chain
+     * `ensure_length` check — the whole PTB aborts atomically if the vector's current length
+     * does not match. Note: the blob is uploaded to Walrus before this transaction runs, so a
+     * failed length check leaves an orphaned blob in Walrus (wasted storage), but prevents a
+     * duplicate append to the vector.
      *
-     * @param {string} blobObjectId - Sui object ID of the certified Blob
+     * @param {string} blobObjectId - On-chain object ID of the certified Walrus blob
      * @param {Transaction} [txToAppendTo=null]
+     * @param {number|null} [expectedLength=null]
      * @returns {Transaction}
-     * @throws {Error} If packageId is not set
      */
-    getPushBlobTransaction(blobObjectId, txToAppendTo = null) {
+    getPushBlobTransaction(blobObjectId, txToAppendTo = null, expectedLength = null) {
         const ev = this._endlessVector;
         if (!ev._packageId) {
             throw new Error('packageId is required to compose push_back_blob transaction');
         }
 
         const tx = txToAppendTo ?? new Transaction();
+        const vectorObj = tx.object(ev.id);
+
+        if (expectedLength !== null) {
+            tx.moveCall({
+                target: `${ev._packageId}::endless_walrus::ensure_length`,
+                arguments: [vectorObj, tx.pure.u64(expectedLength)],
+            });
+        }
 
         tx.moveCall({
             target: `${ev._packageId}::endless_walrus::push_back_blob`,
-            arguments: [tx.object(ev.id), tx.object(blobObjectId)],
+            arguments: [vectorObj, tx.object(blobObjectId)],
         });
 
         return tx;
@@ -404,10 +415,12 @@ export default class EndlessVectorWalrus {
             throw new Error('pushBlob requires walrusClient or publisherUrl');
         }
 
-        const tx = this.getPushBlobTransaction(blobObjectId);
+        const expectedLength = ev.length;
+        const tx = this.getPushBlobTransaction(blobObjectId, null, expectedLength);
         await ev.executeAndWaitForTransaction(tx, { timeout, pollIntervalMs });
 
         ev.reInitialize();
+        ev.length = expectedLength + 1; // keep length in sync for chained pushes
 
         return { blobId, blobObjectId };
     }

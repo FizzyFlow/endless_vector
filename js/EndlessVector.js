@@ -143,7 +143,7 @@ export default class EndlessVector {
      * @param {?Object} [params.gasCoin] - Optional gas coin object reference {objectId: string, digest: string, version: string} to use for transaction payment
      * @param {?Object} [params.options] - Optional transaction parameters
      * @param {?Number} [params.options.timeout] - Transaction confirmation timeout in ms, default 30000
-     * @param {?Number} [params.options.pollIntervalMs] - Poll interval in ms, default 1000
+     * @param {?Number} [params.options.pollIntervalMs] - Poll interval in ms, default 200
      * @returns {Promise<EndlessVector>} A new EndlessVector instance
      * @throws {Error} If the transaction fails or no EndlessVector object is created
      */
@@ -458,7 +458,19 @@ export default class EndlessVector {
     * @param {Uint8Array|Uint8Array[]} arr - Uint8Array to push
     * @returns {Transaction} The transaction object to be signed and executed
     */
-    getPushTransaction(arr, txToAppendTo = null) {
+    /**
+     * Creates a push transaction for the EndlessVector.
+     * Note: this method only creates the transaction, it does not sign or execute it.
+     *
+     * @param {Uint8Array|Uint8Array[]} arr - Byte array or array of byte arrays to push
+     * @param {Transaction} [txToAppendTo=null] - Optional transaction to append to
+     * @param {number|null} [expectedLength=null] - If provided, prepends an on-chain
+     *   `ensure_length` check as the first PTB command. The transaction aborts atomically
+     *   if the vector's current length does not match, preventing duplicate pushes after
+     *   a timeout-retry and catching concurrent writers.
+     * @returns {Transaction} The transaction object to be signed and executed
+     */
+    getPushTransaction(arr, txToAppendTo = null, expectedLength = null) {
         if (!this._packageId) {
             throw new Error('packageId is required to compose push transaction');
         }
@@ -468,11 +480,20 @@ export default class EndlessVector {
             tx = new Transaction();
         }
 
+        const vectorObj = tx.object(this.id);
+
+        if (expectedLength !== null) {
+            tx.moveCall({
+                target: `${this._packageId}::endless_walrus::ensure_length`,
+                arguments: [vectorObj, tx.pure.u64(expectedLength)],
+            });
+        }
+
         if (arr instanceof Uint8Array) {
-            EndlessVector.composePushTransaction(this._packageId, tx.object(this.id), arr, tx);
+            EndlessVector.composePushTransaction(this._packageId, vectorObj, arr, tx);
         } else if (Array.isArray(arr) && arr[0] && (arr[0] instanceof Uint8Array)) {
             for (let i = 0; i < arr.length; i++) {
-                EndlessVector.composePushTransaction(this._packageId, tx.object(this.id), arr[i], tx);
+                EndlessVector.composePushTransaction(this._packageId, vectorObj, arr[i], tx);
             }
         } else {
             throw new Error('.array must be Uint8Array or array of Uint8Array');
@@ -519,10 +540,13 @@ export default class EndlessVector {
             return !!(await this.walrus.pushBlob(arr, params));
         }
 
-        const tx = this.getPushTransaction(arr);
+        const expectedLength = this.length;
+        const itemCount = Array.isArray(arr) ? arr.length : 1;
+        const tx = this.getPushTransaction(arr, null, expectedLength);
         await this.executeAndWaitForTransaction(tx, params);
 
         this.reInitialize(); // force re-initialization to load new data
+        this.length = expectedLength + itemCount; // keep length in sync for chained pushes
 
         return true;
     }
