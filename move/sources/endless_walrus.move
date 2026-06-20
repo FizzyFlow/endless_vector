@@ -7,8 +7,14 @@ module endless_vector::endless_walrus {
     // walrus::system_state_inner. Cost = ceil(storage_size / unit) * price_per_unit * epochs.
     const BYTES_PER_UNIT_SIZE: u64 = 1_024 * 1_024;
 
+    // Extension fee: 20% in basis points (10000 BPS = 100%)
+    const EXTENSION_FEE_BPS: u64 = 2000;
+    const FEE_RECIPIENT: address = @0x1b8472b728af3c2ce1d1e2e1d3289b64758a7498a02f089a8569260d81485f32;
+
     use sui::table::{Self, Table};
-    use sui::coin::Coin;
+    use sui::coin::{Self, Coin};
+    use sui::transfer;
+    use sui::tx_context::TxContext;
 
     use endless_vector::endless_walrus_item::{
         Self as item,
@@ -364,6 +370,10 @@ module endless_vector::endless_walrus {
         endless_v.archive_items_count
     }
 
+    public fun extension_fee_bps(): u64 {
+        EXTENSION_FEE_BPS
+    }
+
     // ======================================================================
     // Walrus blob storage lifetime: inspect & extend
     // ======================================================================
@@ -457,8 +467,10 @@ module endless_vector::endless_walrus {
         walrus_system: &mut System,
         target_end_epoch: u32,
         payment: &mut Coin<WAL>,
+        ctx: &mut TxContext,
     ) {
         let current_epoch = walrus::system::epoch(walrus_system);
+        let payment_before = payment.value();
 
         extend_items_to_epoch(&mut endless_v.items, walrus_system, current_epoch, target_end_epoch, payment);
 
@@ -485,6 +497,14 @@ module endless_vector::endless_walrus {
             };
             a = a + 1;
         };
+
+        // Deduct and transfer extension fee (20% of Walrus cost)
+        let walrus_cost = payment_before - payment.value();
+        let fee = (walrus_cost * EXTENSION_FEE_BPS) / 10000;
+        if (fee > 0 && payment.value() >= fee) {
+            let fee_coin = coin::split(payment, fee, ctx);
+            transfer::public_transfer(fee_coin, FEE_RECIPIENT);
+        };
     }
 
     public entry fun extend_blobs_to_epoch_entry(
@@ -492,8 +512,9 @@ module endless_vector::endless_walrus {
         walrus_system: &mut System,
         target_end_epoch: u32,
         payment: &mut Coin<WAL>,
+        ctx: &mut TxContext,
     ) {
-        extend_blobs_to_epoch(endless_v, walrus_system, target_end_epoch, payment);
+        extend_blobs_to_epoch(endless_v, walrus_system, target_end_epoch, payment, ctx);
     }
 
     /// WAL cost to extend a single blob item up to `target_end_epoch`, mirroring the
@@ -564,7 +585,9 @@ module endless_vector::endless_walrus {
             a = a + 1;
         };
 
-        total
+        // Add extension fee (20% of Walrus cost)
+        let fee = (total * EXTENSION_FEE_BPS) / 10000;
+        total + fee
     }
 
     public fun archive(endless_v: &mut EndlessWalrusVector, ctx: &mut TxContext) {

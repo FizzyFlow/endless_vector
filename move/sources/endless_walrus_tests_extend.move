@@ -132,7 +132,7 @@ module endless_vector::endless_walrus_tests_extend {
         assert!(min_blob_end_epoch(&v) == std::option::some(2u32), 0);
 
         let mut payment = test_utils::mint_frost(N_COINS, ctx);
-        extend_blobs_to_epoch(&mut v, &mut system, 6, &mut payment);
+        extend_blobs_to_epoch(&mut v, &mut system, 6, &mut payment, ctx);
         payment.burn_for_testing();
 
         // Every blob now ends at the target epoch 6.
@@ -158,7 +158,7 @@ module endless_vector::endless_walrus_tests_extend {
         push_certified_blob(&mut v, &mut system, 0xC2, 8, ctx); // beyond target -> untouched
 
         let mut payment = test_utils::mint_frost(N_COINS, ctx);
-        extend_blobs_to_epoch(&mut v, &mut system, 5, &mut payment);
+        extend_blobs_to_epoch(&mut v, &mut system, 5, &mut payment, ctx);
         payment.burn_for_testing();
 
         assert!(blob::end_epoch(borrow_blob_at(&v, 0)) == 5, 0);
@@ -183,7 +183,7 @@ module endless_vector::endless_walrus_tests_extend {
 
         // Target below both end epochs: nothing to do (must not abort on an empty payment).
         let mut payment = test_utils::mint_frost(0, ctx);
-        extend_blobs_to_epoch(&mut v, &mut system, 4, &mut payment);
+        extend_blobs_to_epoch(&mut v, &mut system, 4, &mut payment, ctx);
         payment.burn_for_testing();
 
         assert!(blob::end_epoch(borrow_blob_at(&v, 0)) == 5, 0);
@@ -221,7 +221,7 @@ module endless_vector::endless_walrus_tests_extend {
         assert!(min_blob_end_epoch(&v) == std::option::some(3u32), 2);
 
         let mut payment = test_utils::mint_frost(N_COINS, ctx);
-        extend_blobs_to_epoch(&mut v, &mut system, 7, &mut payment);
+        extend_blobs_to_epoch(&mut v, &mut system, 7, &mut payment, ctx);
         payment.burn_for_testing();
 
         // The minimum across items + history + archive lifted to the target -> every tier
@@ -258,7 +258,7 @@ module endless_vector::endless_walrus_tests_extend {
 
         // Fund a coin with exactly the predicted cost; after extend it must be empty.
         let mut payment = test_utils::mint_frost(cost, ctx);
-        extend_blobs_to_epoch(&mut v, &mut system, target, &mut payment);
+        extend_blobs_to_epoch(&mut v, &mut system, target, &mut payment, ctx);
         assert!(payment.value() == 0, 1);
         payment.burn_for_testing();
 

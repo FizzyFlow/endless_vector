@@ -1,11 +1,11 @@
 
 export default {
     'testnet': {
-        packageId: '0x6f967c5e2c4e3bd9d24616f46c425acd11184c27d140a76a36732b64ae763bb9', // should be the same as in Move.lock
-        originalPackageId: '0x6f967c5e2c4e3bd9d24616f46c425acd11184c27d140a76a36732b64ae763bb9',
+        packageId: '0x5ade1e081e17561c7d1d4a94cfe8584f6dba565c5ef2956a9f9cb9379acbe399', // should be the same as in Move.lock
+        originalPackageId: '0x5ade1e081e17561c7d1d4a94cfe8584f6dba565c5ef2956a9f9cb9379acbe399',
     },
     'mainnet': {
-        packageId: '0x6a1e488f252e6ca5128b5e2c9a5dd92d54888cd74374b97f17349af27f9982dd', // should be the same as in Move.lock
-        originalPackageId: '0x6a1e488f252e6ca5128b5e2c9a5dd92d54888cd74374b97f17349af27f9982dd',
+        packageId: '0xc576f72b124f4ee6953ed04cbefc267d36905d80570a8d109d7421fafcc0ba63', // should be the same as in Move.lock
+        originalPackageId: '0xc576f72b124f4ee6953ed04cbefc267d36905d80570a8d109d7421fafcc0ba63',
     },  
 };

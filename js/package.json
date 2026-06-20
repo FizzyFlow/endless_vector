@@ -1,6 +1,6 @@
 {
     "name": "@fizzyflow/endless-vector",
-    "version": "0.0.12",
+    "version": "0.0.13",
     "description": "Scalable append-only on-chain vector for Sui with Walrus blob offloading and Seal encryption",
     "type": "module",
     "main": "./index.js",
